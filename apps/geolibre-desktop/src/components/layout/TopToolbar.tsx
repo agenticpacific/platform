@@ -122,7 +122,7 @@ import { ConsentNoticeDialogs } from "./toolbar/ConsentNoticeDialogs";
 import { ControlsMenu } from "./toolbar/ControlsMenu";
 import { EditMenu } from "./toolbar/EditMenu";
 import { ViewMenu } from "./toolbar/ViewMenu";
-import { HelpMenu } from "./toolbar/HelpMenu";
+// import { HelpMenu } from "./toolbar/HelpMenu";
 import { OsmPbfDialogs } from "./toolbar/OsmPbfDialogs";
 import { PluginsMenu } from "./toolbar/PluginsMenu";
 import { PluginToolbarMenus } from "./toolbar/PluginToolbarMenus";
@@ -1391,7 +1391,9 @@ export function TopToolbar({
   // on iOS and Android too — where the app is named plain "GeoLibre" (the bundle
   // name from tauri.ios.conf.json, the home-screen icon, and the store listing),
   // so titling it "GeoLibre Desktop" there contradicts every other surface.
-  const appTitle = isTauri() && !isMobile() ? "GeoLibre Desktop" : "GeoLibre";
+  
+  //const appTitle = isTauri() && !isMobile() ? "GeoLibre Desktop" : "GeoLibre";
+  const appTitle = "Agentic Pacific Geospatial Platform";
   const renderToolbarLabel = (label: string) =>
     showLabels ? <span className="hidden sm:inline">{label}</span> : null;
   const chrome: ToolbarChrome = {
@@ -1631,7 +1633,8 @@ export function TopToolbar({
         onOpenChange={setGalleryDialogOpen}
         onOpenProject={(url, authToken) => projectFiles.openProjectFromShareUrl(url, { authToken })}
       />
-      {isMenuVisible(uiProfile, "help") && (
+      
+      {/* {isMenuVisible(uiProfile, "help") && (
         <HelpMenu
           chrome={chrome}
           diagnosticsErrorCount={diagnosticsErrorCount}
@@ -1644,7 +1647,8 @@ export function TopToolbar({
           }}
           onAbout={() => setAboutOpen(true)}
         />
-      )}
+      )} */}
+      
       {/* External plugin toolbar menus render after Help so third-party menus
           sit at the end of the banner, past the built-in menus. */}
       <PluginToolbarMenus chrome={chrome} placement="external" />
