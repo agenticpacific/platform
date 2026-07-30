@@ -76,15 +76,15 @@ jobs:
           # deployed (see docs/collaboration.md).
           VITE_GEOLIBRE_COLLAB_URL: wss://collab.geolibre.app
 
-      - name: Build documentation
-        run: zensical build --strict
+      #- name: Build documentation
+      #  run: zensical build --strict
 
       - name: Add web demo to site
         run: |
-          mkdir -p site/demo
-          cp -R apps/geolibre-desktop/dist/. site/demo/
-          test -f site/demo/index.html
-          test -f site/demo/jupyterlite/lab/index.html
+          mkdir -p site/
+          cp -R apps/geolibre-desktop/dist/. site/
+          test -f site/index.html
+          test -f site/jupyterlite/lab/index.html
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v5
