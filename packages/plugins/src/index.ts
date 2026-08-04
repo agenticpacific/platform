@@ -12,6 +12,7 @@ export {
   getActiveRightPanelDock,
   RIGHT_PANEL_DOCKS,
   isRightPanelCollapsed,
+  isRightPanelVisible,
   getRightPanel,
   listRightPanels,
   getRightPanelSnapshot,
@@ -92,6 +93,7 @@ export {
   openHtmlPanel,
   openLegendPanel,
   openLegendPanelWithItems,
+  LIDAR_SOURCE_KIND,
   openLidarLayerPanel,
   restoreLidarLayers,
   openMeasurePanel,
@@ -170,6 +172,7 @@ export {
 export {
   closePlanetaryComputerPanel,
   openPlanetaryComputerPanel,
+  PLANETARY_COMPUTER_SOURCE_KIND,
   restorePlanetaryComputerLayers,
 } from "./plugins/maplibre-planetary-computer";
 export {
@@ -180,10 +183,16 @@ export {
   toggleEarthEnginePanel,
 } from "./plugins/maplibre-earth-engine";
 export {
+  EARTH_ENGINE_UNAVAILABLE_MESSAGE,
+  isEarthEngineAvailable,
+} from "./plugins/earth-engine-auth";
+export {
   closeThreeDTilesLayerPanel,
   openThreeDTilesLayerPanel,
   restoreThreeDTilesLayers,
+  THREE_D_TILES_SOURCE_KIND,
 } from "./plugins/maplibre-3d-tiles";
+export { isRecoverableNonTiledRasterError } from "./plugins/non-tiled-raster-error";
 export {
   addRasterToMap,
   prepareRasterControl,
@@ -230,10 +239,19 @@ export {
   openVectorLayerPanel,
   reloadVectorControlLayer,
   restoreVectorLayers,
+  setKmlFileImportHandler,
+  isKmlFileSelection,
+  routeKmlFileSelection,
+  type KmlFileImport,
+  type KmlFileImportHandler,
 } from "./plugins/maplibre-vector";
-// The raster-layer-sync and vector-layer-sync internals are not
-// re-exported: the app drives the panels through the functions above, and
-// the tests import the sync helpers from the module paths directly.
+// The rest of the raster-layer-sync / vector-layer-sync internals stay
+// unexported: the app drives the panels through the functions above, and the
+// tests import the sync helpers from the module paths directly. These two are
+// the exception — the Layer Library (issue #1520) has to recognize a
+// control-painted vector layer to read its features before saving it, and to
+// route a re-add back to restoreVectorLayers.
+export { isEmbeddableLocalVectorLayer, VECTOR_SOURCE_KIND } from "./plugins/vector-layer-sync";
 export {
   clearDirectionsWaypoints,
   type DirectionsRouteLegMetric,
@@ -320,8 +338,10 @@ export {
   DECK_VIZ_SOURCE_KIND,
   isDeckVizLayer,
 } from "./plugins/deckgl-viz/store-layer";
+export { VIEWER_BLOCKED_PLUGIN_IDS } from "./viewer-plugins";
 export {
   maplibreAnnotationsPlugin,
+  ANNOTATIONS_PLUGIN_ID,
   ANNOTATIONS_SOURCE_KIND,
   setAnnotationLabels,
   type AnnotationLabels,
@@ -355,7 +375,7 @@ export {
   type ViewImportExport,
   type ViewImportChangeCounts,
 } from "./plugins/geo-editor-view-import";
-export { maplibreGeoAgentPlugin } from "./plugins/maplibre-geoagent";
+export { maplibreGeoAgentPlugin, GEOAGENT_PLUGIN_ID } from "./plugins/maplibre-geoagent";
 export { maplibreUsgsLidarPlugin } from "./plugins/maplibre-usgs-lidar";
 export { maplibreNasaEarthdataPlugin } from "./plugins/maplibre-nasa-earthdata";
 export {
@@ -383,6 +403,27 @@ export {
   setOpenAerialMapLabels,
   type OpenAerialMapLabels,
 } from "./plugins/maplibre-openaerialmap";
+export {
+  ARCGIS_HUB_PLUGIN_ID,
+  DEFAULT_ARCGIS_HUB_LABELS,
+  maplibreArcGisHubPlugin,
+  setArcGisHubLabels,
+  type ArcGisHubLabels,
+} from "./plugins/maplibre-arcgis-hub";
+export {
+  ARCGIS_HUB_PAGE_URL,
+  ARCGIS_HUB_PORTAL_URL,
+  arcGisHubItemDataUrl,
+  arcGisHubItemPageUrl,
+  arcGisHubItemThumbnailUrl,
+  buildArcGisHubSearchUrl,
+  fetchFeatureServiceGeoJson,
+  itemBounds as arcGisHubItemBounds,
+  sanitizeArcGisHubSearchText,
+  searchArcGisHub,
+  type ArcGisHubItem,
+  type ArcGisHubSearchResult,
+} from "./plugins/arcgis-hub-api";
 export {
   buildSearchUrl,
   buildTitilerTemplate,
@@ -433,6 +474,14 @@ export {
   setHuggingFaceLabels,
   type HuggingFaceLabels,
 } from "./plugins/maplibre-huggingface";
+export {
+  createGeoLensHostFetch,
+  defaultGeoLensFetch,
+  resetGeoLensFetch,
+  setGeoLensFetch,
+  type GeoLensFetch,
+  type GeoLensHttpResponse,
+} from "./plugins/geolens-api";
 export {
   DEFAULT_GEOLENS_LABELS,
   DEFAULT_GEOLENS_FEATURE_LIMIT,
@@ -508,13 +557,171 @@ export {
   setH3Labels,
   normalizeH3GridSettings,
   h3LabelMinZoom,
+  h3ResolutionForZoom,
   h3CellFeature,
   h3GridForBounds,
-  h3BoundaryGeometry,
-  unwrapH3Boundary,
+  h3FixTransmeridianBoundary,
   type H3GridSettings,
   type H3Labels,
 } from "./plugins/maplibre-h3";
+export {
+  maplibreS2Plugin,
+  S2_PLUGIN_ID,
+  MAX_S2_LEVEL,
+  S2_VIEWPORT_CELL_LIMIT,
+  DEFAULT_S2_GRID_SETTINGS,
+  DEFAULT_S2_LABELS,
+  getS2GridSettings,
+  setS2GridSettings,
+  setS2Labels,
+  normalizeS2GridSettings,
+  s2LabelMinZoom,
+  s2LevelForZoom,
+  s2CellFeature,
+  s2GridForBounds,
+  type S2GridSettings,
+  type S2Labels,
+} from "./plugins/maplibre-s2";
+export { DGGS_PLUGIN_IDS } from "./plugins/dggs-group";
+export {
+  maplibreA5Plugin,
+  A5_PLUGIN_ID,
+  A5_VIEWPORT_CELL_LIMIT,
+  DEFAULT_A5_GRID_SETTINGS,
+  DEFAULT_A5_LABELS,
+  getA5GridSettings,
+  setA5GridSettings,
+  setA5Labels,
+  normalizeA5GridSettings,
+  a5LabelMinZoom,
+  a5ResolutionForZoom,
+  a5CellFeature,
+  a5GridForBounds,
+  type A5GridSettings,
+  type A5Labels,
+} from "./plugins/maplibre-a5";
+export {
+  maplibreDggridPlugin,
+  DGGRID_PLUGIN_ID,
+  DGGRID_CONFIG,
+  DGGRID_TOPOLOGIES,
+  DGGRID_PROJECTIONS,
+  DGGRID_APERTURES,
+  MAX_DGGRID_RESOLUTION,
+  DGGRID_VIEWPORT_CELL_LIMIT,
+  DEFAULT_DGGRID_GRID_SETTINGS,
+  DEFAULT_DGGRID_LABELS,
+  getDggridGridSettings,
+  setDggridGridSettings,
+  setDggridLabels,
+  normalizeDggridGridSettings,
+  dggridLabelMinZoom,
+  dggridResolutionForZoom,
+  dggridCellFeature,
+  dggridGridForBounds,
+  loadDggrid,
+  type DggridGridSettings,
+  type DggridLabels,
+  type DggridTopology,
+  type DggridProjection,
+  type DggridAperture,
+} from "./plugins/maplibre-dggrid";
+export {
+  maplibreDggalPlugin,
+  DGGAL_PLUGIN_ID,
+  DGGAL_TYPES,
+  DGGAL_TYPE_NAMES,
+  DGGAL_VIEWPORT_CELL_LIMIT,
+  DEFAULT_DGGAL_GRID_SETTINGS,
+  DEFAULT_DGGAL_LABELS,
+  getDggalGridSettings,
+  setDggalGridSettings,
+  setDggalLabels,
+  normalizeDggalGridSettings,
+  dggalLabelMinZoom,
+  dggalResolutionForZoom,
+  dggalZoneFeature,
+  dggalParentZones,
+  dggalGridForBounds,
+  loadDggal,
+  type DggalGridSettings,
+  type DggalLabels,
+  type DggalType,
+  type DggalEngine,
+  type DggalDggrs,
+} from "./plugins/maplibre-dggal";
+export {
+  maplibreOlcPlugin,
+  OLC_PLUGIN_ID,
+  OLC_CODE_LENGTHS,
+  OLC_VIEWPORT_CELL_LIMIT,
+  MAX_OLC_CODE_LENGTH,
+  DEFAULT_OLC_GRID_SETTINGS,
+  DEFAULT_OLC_LABELS,
+  getOlcGridSettings,
+  setOlcGridSettings,
+  setOlcLabels,
+  normalizeOlcGridSettings,
+  olcLabelMinZoom,
+  olcResolutionForZoom,
+  olcCellFeature,
+  olcGridForBounds,
+  olcParentCell,
+  olcChildCount,
+  olcNeighborCells,
+  type OlcGridSettings,
+  type OlcLabels,
+  type OlcCodeLength,
+} from "./plugins/maplibre-olc";
+export {
+  maplibreGeohashPlugin,
+  GEOHASH_PLUGIN_ID,
+  GEOHASH_VIEWPORT_CELL_LIMIT,
+  GEOHASH_CHILDREN_PER_CELL,
+  MIN_GEOHASH_PRECISION,
+  MAX_GEOHASH_PRECISION,
+  DEFAULT_GEOHASH_GRID_SETTINGS,
+  DEFAULT_GEOHASH_LABELS,
+  getGeohashGridSettings,
+  setGeohashGridSettings,
+  setGeohashLabels,
+  normalizeGeohashGridSettings,
+  geohashLabelMinZoom,
+  geohashResolutionForZoom,
+  geohashCellFeature,
+  geohashGridForBounds,
+  geohashParentCell,
+  geohashNeighborCells,
+  type GeohashGridSettings,
+  type GeohashLabels,
+} from "./plugins/maplibre-geohash";
+export {
+  maplibreTilecodePlugin,
+  TILECODE_PLUGIN_ID,
+  TILECODE_VIEWPORT_CELL_LIMIT,
+  TILECODE_CHILDREN_PER_CELL,
+  MIN_TILECODE_ZOOM,
+  MAX_TILECODE_ZOOM,
+  DEFAULT_TILECODE_GRID_SETTINGS,
+  DEFAULT_TILECODE_LABELS,
+  getTilecodeGridSettings,
+  setTilecodeGridSettings,
+  setTilecodeLabels,
+  normalizeTilecodeGridSettings,
+  tilecodeLabelMinZoom,
+  tilecodeResolutionForZoom,
+  tilecodeCellFeature,
+  tilecodeGridForBounds,
+  tilecodeParentCell,
+  tilecodeNeighborCells,
+  tileToTilecode,
+  tilecodeToTile,
+  tileToQuadkey,
+  pointToTile,
+  type Tile,
+  type TilecodeGridSettings,
+  type TilecodeLabels,
+} from "./plugins/maplibre-tilecode";
 export type { WeatherAnimationState, WeatherLayerController } from "./plugins/weather-layer";
 export {
   maplibreCloudsPlugin,
@@ -653,6 +860,14 @@ export {
   type TileSampleStyle,
 } from "./plugins/time-slider-tile-sample";
 export { WEB_SERVICE_PLUGIN_IDS } from "./plugins/web-service-sync";
+export {
+  CKAN_PLUGIN_ID,
+  SOCRATA_PLUGIN_ID,
+  maplibreCkanPlugin,
+  maplibreSocrataPlugin,
+  setOpenDataCatalogLabels,
+  type OpenDataCatalogLabels,
+} from "./plugins/maplibre-open-data-catalogs";
 export {
   DEFAULT_ROUTE_ANIMATION_SETTINGS,
   ROUTE_ANIM_SPEED_MAX,

@@ -16,6 +16,7 @@ import {
   Bookmark,
   Copy,
   FileCode2,
+  FileInput,
   FilePen,
   FilePlus2,
   FileText,
@@ -23,6 +24,7 @@ import {
   FolderOpen,
   HardDriveDownload,
   History,
+  Import,
   LayoutGrid,
   Link2,
   Printer,
@@ -43,7 +45,10 @@ interface ProjectMenuProps {
   onOpenFromFile: () => void;
   onOpenFromUrl: () => void;
   onOpenGallery: () => void;
+  onImportQgisProject: () => void;
+  onImportArcgisProject: () => void;
   onOpenRecent: (path: string) => void;
+  onOpenHistory: () => void;
   onSave: () => void;
   onSaveAs: () => void;
   onDuplicate?: () => void;
@@ -63,7 +68,10 @@ export function ProjectMenu({
   onOpenFromFile,
   onOpenFromUrl,
   onOpenGallery,
+  onImportQgisProject,
+  onImportArcgisProject,
   onOpenRecent,
+  onOpenHistory,
   onSave,
   onSaveAs,
   onDuplicate,
@@ -195,6 +203,30 @@ export function ProjectMenu({
                 onSelect={clearRecentProjects}
               >
                 {t("toolbar.item.clearRecentProjects")}
+              </DropdownMenuItem>
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
+        )}
+        {show("project.history") && (
+          <DropdownMenuItem onSelect={onOpenHistory}>
+            <History className="me-2 h-3.5 w-3.5" />
+            {t("toolbar.item.projectHistoryEllipsis")}
+          </DropdownMenuItem>
+        )}
+        {show("project.import") && (
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger>
+              <Import className="h-3.5 w-3.5" />
+              {t("toolbar.menu.import")}
+            </DropdownMenuSubTrigger>
+            <DropdownMenuSubContent>
+              <DropdownMenuItem onSelect={onImportQgisProject}>
+                <FileInput className="me-2 h-3.5 w-3.5" />
+                {t("toolbar.item.importQgisProjectEllipsis")}
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={onImportArcgisProject}>
+                <FileInput className="me-2 h-3.5 w-3.5" />
+                {t("toolbar.item.importArcgisProjectEllipsis")}
               </DropdownMenuItem>
             </DropdownMenuSubContent>
           </DropdownMenuSub>
