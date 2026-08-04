@@ -4,7 +4,14 @@
 
 Disable all *.yml files under .github/workflows/ apart from pages.yml.
 
-Change from site/demo to /site eg: `cp -R apps/geolibre-desktop/dist/. site/`
+pages.yml:
+
+- Disable 
+  `
+   #- name: Build documentation
+   #- run: zensical build --strict
+  `
+- Change from site/demo to /site eg: `cp -R apps/geolibre-desktop/dist/. site/`
 
 ### Title Change
 
