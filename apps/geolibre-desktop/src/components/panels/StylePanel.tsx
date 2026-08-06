@@ -56,6 +56,9 @@ import { useTranslation } from "react-i18next";
 import { AttributeFormSection } from "./AttributeFormSection";
 import { LayerJoinsSection } from "./LayerJoinsSection";
 import { VirtualFieldsSection } from "./VirtualFieldsSection";
+import { getNetcdfLayerState, NETCDF_IMAGE_SOURCE_KIND } from "../../lib/netcdf-image-symbology";
+import { NetcdfProfilePanel } from "./NetcdfProfilePanel";
+import { NetcdfSymbologySection } from "./NetcdfSymbologySection";
 import { RasterSymbologySection } from "./RasterSymbologySection";
 import { TimeSliderSymbologySection } from "./TimeSliderSymbologySection";
 import { ExpressionBuilderDialog } from "../expressions/ExpressionBuilderDialog";
@@ -4628,6 +4631,14 @@ export function StylePanel({
   }
 
   if (!hasVectorPaintControls) {
+    // The section renders nothing without retained grids, so ask here too, or
+    // the panel would suppress the fallback message and show an empty body.
+    // The layer state rather than `getNetcdfImageSource`, which is null for an
+    // RGB composite: that one has no colormap to re-apply, but it does have a
+    // band summary to show and pixels to sample.
+    const hasNetcdfSymbology =
+      layer.metadata.sourceKind === NETCDF_IMAGE_SOURCE_KIND &&
+      getNetcdfLayerState(layer.id) !== null;
     return (
       <aside aria-label={t("style.panelLabel")} className={STYLE_PANEL_ASIDE_CLASS}>
         {resizeHandle}
@@ -4646,8 +4657,22 @@ export function StylePanel({
             <PanelRightClose className="h-4 w-4" />
           </Button>
         </div>
-        <div className="space-y-4 p-3">{beforeIdControl}</div>
-        <p className="p-4 text-xs text-muted-foreground">{t("style.noControls")}</p>
+        <ScrollArea className="flex-1">
+          <div className="space-y-4 p-3 pe-5">
+            {beforeIdControl}
+            {/* A NetCDF grid baked to pixels has no MapLibre paint properties,
+                so it lands in this branch; its colormap/limits are re-applied
+                by re-baking the image rather than by a style property. The
+                grids are dropped on a project reload, so the generic message
+                still has to appear for a layer restored from one. */}
+            {hasNetcdfSymbology ? (
+              <NetcdfSymbologySection layer={layer} />
+            ) : (
+              <p className="text-xs text-muted-foreground">{t("style.noControls")}</p>
+            )}
+            {hasNetcdfSymbology && <NetcdfProfilePanel layerId={layer.id} />}
+          </div>
+        </ScrollArea>
         <Separator />
         <p className="p-2 text-[10px] text-muted-foreground">
           {t("style.selectedLayerType", { type: layer.type })}

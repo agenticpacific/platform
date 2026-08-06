@@ -87,6 +87,7 @@ export {
   isViewStatePanelVisible,
   COMPONENTS_PLUGIN_ID,
   maplibreComponentsPlugin,
+  applyStacSearchLayerOrder,
   openBookmarkPanel,
   openFlatGeobufAddVectorLayerPanel,
   openColorbarPanel,
@@ -147,10 +148,30 @@ export {
 } from "./plugins/zarr-directory-store";
 export {
   openLocalNetcdf,
+  openRemoteNetcdf,
   buildInlineZarrRefs,
+  buildInlineZarrStore,
+  composeColormappedImage,
+  composeRgbImage,
+  gridBounds,
+  gridPixelAt,
+  gridValueAt,
+  percentileClim,
+  type ColormapComposition,
+  type RgbComposition,
+  type LocalNetcdfAxis,
+  type GridPixel,
+  type LocalNetcdfGrid,
+  type LocalNetcdfProfile,
+  type LocalNetcdfProfileOptions,
+  type LocalNetcdfColormappedImage,
   type LocalNetcdfFile,
+  type LocalNetcdfImage,
   type LocalNetcdfVariable,
   type LocalNetcdfLayerRefs,
+  type LocalNetcdfRgbImage,
+  type LocalNetcdfRgbOptions,
+  type LocalNetcdfWindow,
   type InlineZarrGrid,
 } from "./plugins/local-netcdf";
 export {
@@ -230,7 +251,7 @@ export {
   getPaletteLegend,
   type PaletteLegendEntry,
 } from "./plugins/raster-palette";
-export { colormapColors, warmColormapColors } from "./plugins/colormap-colors";
+export { colormapColors, normalizeRampColor, warmColormapColors } from "./plugins/colormap-colors";
 export { setTerrainMeasureLabels } from "./plugins/terrain-measure";
 export {
   closeVectorLayerPanel,

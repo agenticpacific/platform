@@ -65,6 +65,8 @@ export {
   DEFAULT_REVERSE_GEOCODE_ENDPOINT,
   NOMINATIM_PUBLIC_HOST,
   NOMINATIM_MIN_INTERVAL_MS,
+  CARTOCIUDAD_PUBLIC_HOST,
+  CARTOCIUDAD_MIN_INTERVAL_MS,
   PUBLIC_GEOCODE_ROW_CAP,
   GEOCODE_LAT_KEY,
   GEOCODE_LON_KEY,
@@ -130,3 +132,4 @@ export {
   redactUrlCredentials,
   type CredentialRedactionResult,
 } from "./credentials";
+export { excludeHiddenFieldsFromGeojson, excludeHiddenFieldsFromProject } from "./visibility";
