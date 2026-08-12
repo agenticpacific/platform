@@ -4,7 +4,8 @@ A feature-by-feature list of what GeoLibre can do today — the latest release p
 what has landed on `main` since (see [Recently added](index.md#recently-added)).
 For task-oriented walkthroughs, see the [User Guide](user-guide/interface.md) and
 the [Tutorials](tutorials/index.md); for what is planned next, see the
-[Roadmap](roadmap.md).
+[Roadmap](roadmap.md). For how this stacks up against QGIS, ArcGIS, Felt, and
+kepler.gl, see the [Comparison](comparison.md).
 
 ## Platforms and interface
 
@@ -27,7 +28,10 @@ the [Tutorials](tutorials/index.md); for what is planned next, see the
     - **Basemaps**: OpenFreeMap, Protomaps, EOX Sentinel-2 cloudless, and Openbasiskaart, with stacking of multiple raster basemaps, blank background support, and double-click to swap the core basemap from the layer panel
     - **Planetary basemaps**: Mars and the Moon (OpenPlanetaryMap), plus Mercury, Venus, the Galilean moons (Io, Europa, Ganymede, Callisto), Titan, Pluto, and Charon (USGS Astrogeology, reprojected to Web Mercator by the tiles Worker). A per-project ellipsoid drives distance, area, and scale measurements from that body's radius, and a planet switcher sits in the Layers panel
     - **Toggleable controls**: navigation, fullscreen, geolocation, globe, terrain, scale (metric, imperial, or nautical), attribution, and logo, plus a double-click terrain control for setting vertical exaggeration
-    - **On-map helpers**: a right-click context menu for reading coordinates and quick actions, and a Gridlines coordinate-grid overlay with edge labels and a UTM easting/northing grid mode
+    - **On-map helpers**: a right-click context menu that reads out and copies the clicked coordinate, opens it in Google Maps or Google Earth, and carries a **Quick analysis** submenu — buffers, drive- and walk-time isochrones, and a viewshed, each run on the clicked point with no dialog and no point layer to create first (the same submenu on a layer row runs buffers, centroids, convex hull, and bounding box over the whole layer) — plus a Gridlines coordinate-grid overlay with edge labels and a UTM easting/northing grid mode
+    - **Interactive viewshed**: right-click anywhere and get what is visible from that spot within 2, 5, or 15 km, computed from the same public terrain tiles the map already renders — no DEM to find, download, or load, and 3D terrain need not even be on. The result is an ordinary image overlay layer, so it gets opacity, ordering, zoom-to, and project save for free. Earth curvature and refraction are not modelled; the Whitebox **Viewshed** tool remains the rigorous DEM-in-hand option
+    - **Status bar readouts**: the pointer coordinate in decimal degrees, DMS, DDM, or UTM (click to cycle, or set it in Settings; UTM reuses the projection that draws the Gridlines grid, and falls back to degrees outside its valid latitude band), the ground elevation under the pointer, camera altitude above sea level as Google Earth-style **Eye alt** — scaled to the active celestial body, so it stays right on a Mars or Moon basemap — plus zoom, bearing, pitch, and the view bounding box
+    - **Pointer elevation** resolved from the map's own 3D terrain whenever a usable sample is available there (instant, offline, nothing leaves the device), and from a public elevation API when terrain has no value to give — after the pointer settles, cached per cell, Earth-only, off by default, and gated behind an explicit consent notice, so declining is what keeps the readout off the network
     - **View menu**: viewport history navigation, a reset pitch and bearing control, a distinct north arrow, and View in Google Maps and View in Google Earth actions
 - Multi-map grid that splits the workspace into a grid of synchronized map views, so you can compare basemaps, layers, or time steps side by side, with any **secondary** pane switchable to an optional CesiumJS 3D globe via its 2D/3D toggle — the primary map is always MapLibre (camera-synced with the 2D maps; requires a Cesium Ion token — see [Optional 3D globe credentials](getting-started.md#optional-3d-globe-credentials-cesium-ion))
 - Timelapse mode that animates annual cloudless basemaps — EOX Sentinel-2 and NASA GIBS providers (Landsat/WELD and MODIS land cover) — with a provider picker and legend
@@ -41,7 +45,8 @@ the [Tutorials](tutorials/index.md); for what is planned next, see the
 - Reproject vector layers to EPSG:4326 on load, render vector layers that carry Z coordinates in true 3D rather than flattening them onto the ground plane, and split dragged GPX files into named waypoint, track, and route layers
 - Large local vector layers render through client-side vector tiling, with a warning before loading very large files
 - Add Data menu covering every remote and cloud-native source:
-    - **Tile and map services**: XYZ tiles; WMS and WFS, with layers and feature types discovered from the service's GetCapabilities so you pick from a populated dropdown; vector tiles, including OGC API - Tiles services; and ArcGIS FeatureServer and VectorTileServer layers
+    - **URL deep links**: open GeoJSON, GeoParquet, PMTiles, a REST endpoint returning a GeoJSON FeatureCollection, a COG, or a ZIP/REST response containing multiple GeoJSON files with `?data=`; optionally apply vector or raster style JSON with `?style=`, automatically fit the layer extent, and associate per-file ZIP styles by filename stem
+    - **Tile and map services**: XYZ tiles; WMS and WFS, with layers and feature types discovered from the service's GetCapabilities so you pick from a populated dropdown; vector tiles, including OGC API - Tiles services; and ArcGIS FeatureServer, VectorTileServer, MapServer, and ImageServer layers, the last two with optional sublayer selection and server-side raster functions
     - **Feature services and feeds**: GeoJSON URLs; GeoRSS feeds from a URL or file; and OGC API - Features collections added as vector layers from whatever URL you have in hand — a landing page, `/collections`, a collection, or a full items URL
     - **Raster**: COG and GeoTIFF; Cloud-Optimized NetCDF/HDF via kerchunk references, plus local HDF5 and NetCDF-4 files; and MBTiles
     - **Cloud-native archives**: PMTiles, and Zarr from a remote store or a folder on disk, with variable and dimension pickers that offer the store's real coordinate values rather than raw indices
@@ -85,7 +90,7 @@ the [Tutorials](tutorials/index.md); for what is planned next, see the
     - **Rule-based renderer**: per-rule symbol properties, scale-dependent visibility, nested rules, and per-rule toggles, and it can hide features matching no rule
     - **Style toolkit**: diagram symbology (pie, donut, and bar charts drawn on features); a symbology pack of inverted-polygon masks, arrow and marker lines, and geometry generators; and data-driven proportional sizing for marker icons
     - **Style Manager**: saves reusable symbol, color-ramp, and label presets to a personal library and applies them across projects
-    - **Interchange**: vector layer symbology imports and exports as OGC SLD, QGIS QML, and Mapbox GL style JSON, so styles round-trip between GeoLibre, QGIS, and the Mapbox/MapLibre ecosystem
+    - **Interchange**: vector layer symbology imports and exports as OGC SLD, QGIS QML, Mapbox GL style JSON, and compact GeoLibre URL style JSON; URL-style exports omit feature data, carry filename-matched sources for ZIP layers, work directly with `?style=`, and can be imported back onto any selected vector layer
 - Data-defined label engine for labeling vector features by any attribute or expression
     - ArcGIS-style placement and styling controls: anchor, X/Y offset, rotation, wrap width, and letter case
     - Expression-driven label properties and placement priority
@@ -95,6 +100,7 @@ the [Tutorials](tutorials/index.md); for what is planned next, see the
     - Local grids are colormapped in the browser from the same colormap catalog the Style panel uses, added as image overlays, and fitted to the camera on add, so Zoom to layer has a real extent to fly to
     - A hyperspectral cube gains an RGB band combination picked by wavelength
     - Identify reads a pixel's value off the map and, for a cube, walks the band axis to chart a spectral signature against wavelength — up to six sampled points, each drawn as a numbered dot in its chart color, compared in a draggable and resizable window over the map and exported as PNG or CSV
+    - The same spectral profile works on any **multiband GeoTIFF or COG**, not just NetCDF/HDF — click a stacked Landsat or Sentinel scene to compare the response of water, vegetation, and asphalt across every band. Reads are range requests for the tile containing the pixel rather than the whole scene, the click is reprojected into the raster's own CRS, and the chart plots against wavelength when the file declares one per band and against band number otherwise
     - A **3D image cube** view renders the scene as its six exterior faces with draggable slice cuts, reading windowed and strided so a full EMIT reflectance variable stays within what the browser can hold
 
 ## Attribute data and expressions
@@ -120,7 +126,7 @@ the [Tutorials](tutorials/index.md); for what is planned next, see the
 ## Map tools, printing, and media
 
 - Controls menu
-    - Measure (including terrain-aware 3D measurements), Bookmark, Minimap, View State, and a Search panel
+    - Measure (including terrain-aware 3D measurements and a heading readout — a true great-circle initial bearing with a 16-point compass label, plus a final bearing on lines long enough for the great circle to converge), Bookmark, Minimap, View State, and a Search panel
     - Map annotation tools that draw text, arrows, and highlights on the map, saved with the project
     - Persistent mode banners for the Directions and Reverse Geocode tools
     - A Camera Tour recorder that captures an animated keyframe tour to video, with per-keyframe recapture, per-keyframe hold and transition duration controls, and saving or loading a named tour setup as JSON
@@ -139,7 +145,7 @@ the [Tutorials](tutorials/index.md); for what is planned next, see the
 
 ## Storytelling and collaboration
 
-- Story map builder that composes its chapters directly on the live map, with a presenter view, dedicated start and closing slides, an optional hide-itinerary toggle, a printable PDF handout generator (with subtitle and byline fields), and standalone HTML export
+- Story map builder that composes its chapters directly on the live map, with a presenter view, dedicated start and closing slides, an optional hide-itinerary toggle, a printable PDF handout generator (with subtitle and byline fields, and optional location markers that open each chapter coordinate in Google Maps), and standalone HTML export
 - Real-time multi-user collaboration (MVP; see [Collaboration](collaboration.md)) so several people can edit the same project together
     - Per-participant permissions and an in-app chat panel
     - An on-canvas session-status badge and roster — a live dot, a connected-participant count, and an expandable client list — while a session is active
@@ -157,6 +163,7 @@ the [Tutorials](tutorials/index.md); for what is planned next, see the
     - Notebook cells drive the map through an auto-loaded `geolibre` client, and external Jupyter frontends attached to that server (VS Code's Jupyter extension, `jupyter console`, nbclient) drive the map too
 - Python package (`geolibre`) that embeds the full app in Jupyter notebooks as an [anywidget](https://anywidget.dev), with two-way project sync. See the [Python package guide](python.md)
     - An expanded leafmap-style API: local raster, marker/cluster, and choropleth layers; `split_map`, `add_legend`, and `add_colorbar` helpers; typed read-back of selected and drawn features; and `to_html` export
+- R package (`geolibre`) for interactive GeoLibre maps in RStudio, Quarto, R Markdown, and Shiny, with GeoJSON, `sf`, remote raster, camera, and project-file support. See the [R package guide](r.md)
 - Optional Python FastAPI sidecar for heavier processing workflows
 
 ## Processing and analysis
@@ -166,7 +173,7 @@ the [Tutorials](tutorials/index.md); for what is planned next, see the
     - The desktop app prefers the Python sidecar, whose GDAL/rio-cogeo stack reads more input formats and tiles deeper
 - **1,000+ geoprocessing tools** in the Whitebox toolbox, running entirely in the browser through a WebAssembly runtime with raster and vector I/O — no Python sidecar required, so the full set works on the web, desktop, and Android
     - Surfaces both the Whitebox Next Gen suite and GeoLibre's own WASM tools, filterable by source
-    - Nine categories: vector (~280 tools), raster (~230), remote sensing (~150), hydrology (~100), terrain (~100), LiDAR (~65), conversion (~50), network (~25), and projection (4)
+    - Nine categories: vector (~315 tools), raster (~255), remote sensing (~155), hydrology (~100), terrain (~100), LiDAR (~65), conversion (~50), network (~25), and projection (4)
     - Browsable by category directly in the Processing menu, with nested subcategory submenus and an offline-bundled tool catalog
     - A **Run locally (WASM)** toggle switches any tool between the in-browser runtime and the Python sidecar, which reads native file paths for batch runs over a directory
     - Deep-linkable through a `?tool=` URL parameter that preselects a tool and pre-fills its form, with a Copy link button that builds the shareable link
@@ -197,6 +204,7 @@ the [Tutorials](tutorials/index.md); for what is planned next, see the
 ## Projects and sharing
 
 - Project menu to create, open, save, and Save As `.geolibre.json` projects, export a project to a single standalone interactive HTML file that runs offline with no server, and a project gallery for browsing and opening shared projects with one click
+- Share-readiness check in the Share dialog: before the upload, every data source the project references is classified and probed anonymously from the browser, and the ones a recipient could not load are listed with a plain-language reason and a fix, covering credential-gated services, hosts with no cross-origin headers, expired or moved links, and local or private-network sources. It informs rather than blocks. See [Projects](user-guide/projects.md#share-readiness-check)
 - Autosave with a browsable project history. See [Projects](user-guide/projects.md#project-history-and-crash-recovery)
     - Snapshots are written to local device storage a few seconds after each change settles, and listed newest first with their layer count and zoom
     - Restoring a snapshot is an undoable step
@@ -205,6 +213,7 @@ the [Tutorials](tutorials/index.md); for what is planned next, see the
 - QGIS project import (`.qgs` and `.qgz`) that rebuilds layers, nested layer groups, group visibility, layer order, styling, and the saved map view, reporting per-layer why anything was skipped rather than failing the whole import. See [Projects](user-guide/projects.md#importing-a-qgis-project)
 - ArcGIS Pro project import (`.aprx` and `.mapx`) that reads CIM JSON without ArcPy and restores the first 2D map's extent, local vector and GeoTIFF layers, nested groups, visibility, simple symbols, field labels, vector-tile portal items, and cached map services, with per-layer warnings for unsupported sources. See [Projects](user-guide/projects.md#importing-an-arcgis-pro-project)
 - Reusable project templates saved to a personal library, with an option to keep the basemap, groups, styles, legend, widgets, and layout while stripping the data layer content
+- Startup project preference on the desktop app: open the default workspace, reopen the last local project, or always open one chosen project. Remote share links are never replayed on launch, a project URL in the address bar takes precedence, and a startup project that has gone missing falls back to the default workspace with an explanation instead of an error. See [Settings](user-guide/settings.md#startup)
 
 ## Plugins
 

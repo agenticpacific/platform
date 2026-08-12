@@ -30,6 +30,9 @@ import {
   supportsBridgedOpacity,
   useAppStore,
   excludeHiddenFieldsFromGeojson,
+  layerGroupDepth,
+  layerGroupMoveability,
+  layerPanelGroupHeaders,
 } from "@geolibre/core";
 import type { EllipsoidId, GeoLibreLayer, LayerGroup } from "@geolibre/core";
 import type { FeatureCollection } from "geojson";
@@ -52,6 +55,7 @@ import {
   materializeEmbeddableVectorLayers,
   RASTER_SOURCE_KIND,
   reloadVectorControlLayer,
+  replayVectorControlLayerById,
   SKETCHES_SOURCE_KIND,
   TIME_SLIDER_PLUGIN_ID,
   type TimePropertyCandidate,
@@ -63,10 +67,12 @@ import {
   applyQmlImport,
   applySldImport,
   buildMapboxStyle,
+  buildGeoLibreQueryStyle,
   buildQml,
   buildSld,
   isPlaceholderLayer,
   mapboxStyleToJson,
+  geoLibreStyleSourceName,
   parseMapboxStyle,
   parseQml,
   parseSld,
@@ -239,6 +245,13 @@ interface LayerPanelProps {
   onMaterializeDuckDBLayer: (layer: GeoLibreLayer) => void;
   /** Open the floating Add Raster Layer panel for advanced raster styling. */
   onOpenRasterStylePanel: () => void;
+  /**
+   * Select the target layer and expand the built-in Style panel. Left undefined
+   * when that panel is hidden (Settings → "Show Style panel"), which also hides
+   * the menu item — the panel is not mounted then, so the request would be
+   * dropped rather than queued.
+   */
+  onOpenStylePanel?: () => void;
   /**
    * Open the floating Extract Subset panel for a COG/WMS/XYZ layer, letting the
    * user draw a bounding box and export a clipped GeoTIFF.
@@ -604,6 +617,7 @@ export function LayerPanel({
   onCancelGeometryEdit,
   onMaterializeDuckDBLayer,
   onOpenRasterStylePanel,
+  onOpenStylePanel,
   onOpenRasterSubset,
   autoCollapse = false,
   collapsed: controlledCollapsed,
@@ -884,19 +898,7 @@ export function LayerPanel({
     [layerGroups],
   );
   const groupDepth = useCallback(
-    (group: LayerGroup) => {
-      let depth = 0;
-      let parentId = group.parentId;
-      const visited = new Set([group.id]);
-      while (parentId && !visited.has(parentId)) {
-        visited.add(parentId);
-        const parent = groupById.get(parentId);
-        if (!parent) break;
-        depth += 1;
-        parentId = parent.parentId;
-      }
-      return depth;
-    },
+    (group: LayerGroup) => layerGroupDepth(group, groupById),
     [groupById],
   );
   const hasCollapsedAncestor = useCallback(
@@ -929,59 +931,19 @@ export function LayerPanel({
       }),
     [groupById, layerGroups],
   );
-  const firstMemberIdByGroup = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const layer of visibleLayers) {
-      if (layer.groupId && !map.has(layer.groupId)) {
-        map.set(layer.groupId, layer.id);
-      }
-    }
-    return map;
-  }, [visibleLayers]);
-  const descendantLayerAnchorByGroup = useMemo(() => {
-    const result = new Map<string, string>();
-    const displayGroupIds = visibleLayers
-      .map((layer) => layer.groupId)
-      .filter((id): id is string => Boolean(id && groupById.has(id)));
-    for (const group of layerGroups) {
-      if (firstMemberIdByGroup.has(group.id)) continue;
-      const anchor = displayGroupIds.find((candidateId) => {
-        let parentId = groupById.get(candidateId)?.parentId;
-        const visited = new Set<string>();
-        while (parentId && !visited.has(parentId)) {
-          if (parentId === group.id) return true;
-          visited.add(parentId);
-          parentId = groupById.get(parentId)?.parentId;
-        }
-        return false;
-      });
-      if (anchor) result.set(group.id, anchor);
-    }
-    return result;
-  }, [firstMemberIdByGroup, groupById, layerGroups, visibleLayers]);
-  const organizerHeadersByAnchor = useMemo(() => {
-    const result = new Map<string, LayerGroup[]>();
-    for (const group of layerGroups) {
-      const anchor = descendantLayerAnchorByGroup.get(group.id);
-      if (!anchor) continue;
-      const headers = result.get(anchor) ?? [];
-      headers.push(group);
-      result.set(anchor, headers);
-    }
-    for (const headers of result.values()) {
-      headers.sort((a, b) => groupDepth(a) - groupDepth(b));
-    }
-    return result;
-  }, [descendantLayerAnchorByGroup, groupDepth, layerGroups]);
-  // Empty folders have no member to anchor them, so they render pinned at the
-  // top of the panel where they are easy to drop layers into.
-  const emptyGroups = useMemo(
-    () =>
-      layerGroups.filter(
-        (group) =>
-          !firstMemberIdByGroup.has(group.id) && !descendantLayerAnchorByGroup.has(group.id),
-      ),
-    [descendantLayerAnchorByGroup, firstMemberIdByGroup, layerGroups],
+  // Every group header — the group a row belongs to, the organizers above it
+  // whose layers all live in child groups, and the folders holding no layer at
+  // all — comes from one core walk, anchored to the layer row it is drawn
+  // above. Deriving them together is what keeps a nested folder below the
+  // parent it sits in, and lets an empty folder keep its spot relative to its
+  // siblings when one of them gains a layer (GeoLibre#1739).
+  const groupHeaders = useMemo(
+    () => layerPanelGroupHeaders(layers, layerGroups),
+    [layers, layerGroups],
+  );
+  const groupMoveability = useMemo(
+    () => layerGroupMoveability(layers, layerGroups),
+    [layers, layerGroups],
   );
   // Resize the metadata dialog from its bottom-end grip. The dialog is centred
   // via a -50% transform, so each edge moves by half the size change; growing
@@ -1425,10 +1387,16 @@ export function LayerPanel({
           return;
         }
         if (isVectorControlRefreshLayer(layer)) {
-          const info = await reloadVectorControlLayer(layer.id);
+          // A layer whose restore failed stays in the project but never made it
+          // into the control, so reloadLayer cannot find it. Replaying it is
+          // what brings such a layer back once the source is reachable again,
+          // which is why refresh (manual and automatic) tries that second.
+          const info =
+            (await reloadVectorControlLayer(layer.id)) ??
+            (await replayVectorControlLayerById(layer.id));
           if (!info) {
             // The control is unavailable (panel never opened, or torn down
-            // and not yet replayed) or no longer knows this layer id.
+            // and not yet replayed) or the replay above did not succeed.
             // Automatic ticks fire on a timer the user didn't initiate, so
             // skip silently and clear the transient note instead of surfacing
             // an error every interval until the control comes back.
@@ -1702,6 +1670,40 @@ export function LayerPanel({
     [exportLayerStyle, t],
   );
 
+  // Export the compact style consumed by `?data=…&style=…`. Its render-layer
+  // source is the original data filename stem, which also lets one style file
+  // target individual GeoJSON members of a ZIP archive.
+  const handleExportGeoLibreStyle = useCallback(
+    (layer: GeoLibreLayer) =>
+      exportLayerStyle(
+        layer,
+        (geojson) => {
+          if (!geojson) {
+            return {
+              error:
+                geojsonVectorSourceId(layer) !== null
+                  ? t("layers.exportStyleDataNotReady")
+                  : t("layers.exportStyleNeedsFeatures"),
+            };
+          }
+          const result = buildGeoLibreQueryStyle(layer, geojson);
+          return { text: mapboxStyleToJson(result), warnings: result.warnings };
+        },
+        {
+          defaultName: `${sanitizeExportFileName(geoLibreStyleSourceName(layer))}.geolibre.style.json`,
+          filters: [{ name: "GeoLibre URL style", extensions: ["json"] }],
+          browserTypes: [
+            {
+              description: "GeoLibre URL style",
+              accept: { "application/json": [".json"] },
+            },
+          ],
+          mimeType: "application/json",
+        },
+      ),
+    [exportLayerStyle, t],
+  );
+
   // Export a vector layer's symbology as an OGC SLD document, the interchange
   // format QGIS, GeoServer, MapServer, and ArcGIS speak. Unlike the Mapbox
   // export, SLD carries no data, so a layer whose features are not readable can
@@ -1755,7 +1757,8 @@ export function LayerPanel({
     [exportLayerStyle],
   );
 
-  // Import a symbology file (Mapbox GL / MapLibre style JSON or an OGC SLD) and
+  // Import a symbology file (including GeoLibre URL and Mapbox/MapLibre style
+  // JSON, or an OGC SLD/QGIS QML) and
   // apply it to a vector layer, so cartography authored elsewhere (QGIS,
   // GeoServer, another map, or a style exported from GeoLibre) can be brought
   // back in instead of being rebuilt by hand. The format is detected from the
@@ -1768,10 +1771,14 @@ export function LayerPanel({
         const picked = await openLocalDataFileWithFallback({
           filters: [
             {
-              name: "Style (Mapbox GL / SLD / QML)",
+              name: "Style (GeoLibre URL / Mapbox GL / SLD / QML)",
               extensions: ["json", "sld", "qml", "xml"],
             },
           ],
+          // Android filters document pickers by MIME type, but SLD and QML do
+          // not have consistently reported MIME types. Leave the native picker
+          // broad there, then validate the selected file by content below.
+          androidFilters: [],
           accept: ".json,.sld,.qml,.xml,application/json,application/xml,text/xml",
           readText: true,
         });
@@ -1784,7 +1791,9 @@ export function LayerPanel({
         // Detect the format from the content, which is more reliable than the
         // file extension (a `.xml` can hold either XML dialect): a QGIS QML has
         // a `<qgis>`/`renderer-v2` root, an SLD a `StyledLayerDescriptor` root,
-        // and everything else is parsed as a Mapbox GL style JSON.
+        // and everything else (including a `.geolibre.style.json` export) is
+        // parsed as Mapbox GL style JSON. Its source binding is intentionally
+        // irrelevant here: importing applies symbology to the selected layer.
         const trimmed = picked.text.trimStart();
         const isXml = trimmed.startsWith("<");
         const isQml = isXml && isQmlStyleXml(picked.text);
@@ -2583,8 +2592,7 @@ export function LayerPanel({
   const renderGroupHeader = (group: LayerGroup) => {
     if (hasCollapsedAncestor(group)) return null;
     const isDropTarget = dropTargetGroupId === group.id;
-    const canReorderGroup =
-      firstMemberIdByGroup.has(group.id) || descendantLayerAnchorByGroup.has(group.id);
+    const moveability = groupMoveability.get(group.id);
     const moveTargets = groupMoveTargets(group);
     return (
       <div
@@ -2746,7 +2754,7 @@ export function LayerPanel({
                   menu on select; only the rename item above keeps it, so the
                   menu's close does not race its input autofocus. */}
               <DropdownMenuItem
-                disabled={!canReorderGroup}
+                disabled={!moveability?.up}
                 onSelect={() => {
                   reorderLayerGroup(group.id, "up");
                 }}
@@ -2755,7 +2763,7 @@ export function LayerPanel({
                 {t("layers.moveGroupUp")}
               </DropdownMenuItem>
               <DropdownMenuItem
-                disabled={!canReorderGroup}
+                disabled={!moveability?.down}
                 onSelect={() => {
                   reorderLayerGroup(group.id, "down");
                 }}
@@ -2945,12 +2953,8 @@ export function LayerPanel({
               {isBeginnerProfile ? t("layers.emptyBeginner") : t("layers.empty")}
             </p>
           )}
-          {emptyGroups.map((group) => (
-            <Fragment key={group.id}>{renderGroupHeader(group)}</Fragment>
-          ))}
           {visibleLayers.map((layer, displayIndex) => {
             const group = layer.groupId ? groupById.get(layer.groupId) : undefined;
-            const isFirstOfGroup = group ? firstMemberIdByGroup.get(group.id) === layer.id : false;
             const groupCollapsed = group?.collapsed ?? false;
             const groupAncestorCollapsed = group ? hasCollapsedAncestor(group) : false;
             // When an ancestor group is hidden, a layer whose own visibility
@@ -3113,14 +3117,9 @@ export function LayerPanel({
             const moveIds = selectedMoveIds(layer.id);
             return (
               <Fragment key={layer.id}>
-                {isFirstOfGroup &&
-                  group &&
-                  organizerHeadersByAnchor
-                    .get(group.id)
-                    ?.map((organizer) => (
-                      <Fragment key={organizer.id}>{renderGroupHeader(organizer)}</Fragment>
-                    ))}
-                {isFirstOfGroup && group && renderGroupHeader(group)}
+                {groupHeaders.aboveLayer.get(layer.id)?.map((header) => (
+                  <Fragment key={header.id}>{renderGroupHeader(header)}</Fragment>
+                ))}
                 {!groupCollapsed && !groupAncestorCollapsed && (
                   <div
                     data-layer-card=""
@@ -3416,6 +3415,17 @@ export function LayerPanel({
                           action item below has no such focus target, so each
                           lets Radix dismiss the menu on select rather than
                           leaving it pinned open. */}
+                          {onOpenStylePanel && (
+                            <DropdownMenuItem
+                              onSelect={() => {
+                                selectLayer(layer.id);
+                                onOpenStylePanel();
+                              }}
+                            >
+                              <Palette className="me-2 h-3.5 w-3.5" />
+                              {t("layers.openStylePanel")}
+                            </DropdownMenuItem>
+                          )}
                           <DropdownMenuItem
                             onSelect={() => {
                               addLayerGroup(undefined, moveIds);
@@ -3741,6 +3751,14 @@ export function LayerPanel({
                                   <>
                                     <DropdownMenuItem
                                       onSelect={() => {
+                                        void handleExportGeoLibreStyle(layer);
+                                      }}
+                                    >
+                                      <Download className="me-2 h-3.5 w-3.5" />
+                                      {t("layers.exportGeoLibreStyle")}
+                                    </DropdownMenuItem>
+                                    <DropdownMenuItem
+                                      onSelect={() => {
                                         void handleExportStyle(layer);
                                       }}
                                     >
@@ -4024,6 +4042,11 @@ export function LayerPanel({
               </Fragment>
             );
           })}
+          {/* Headers placed below the last layer row: the panel has no layer
+              left to anchor them above. */}
+          {groupHeaders.bottom.map((group) => (
+            <Fragment key={group.id}>{renderGroupHeader(group)}</Fragment>
+          ))}
           <div
             data-layer-card=""
             className={`rounded-md border p-2 transition-colors ${

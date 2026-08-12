@@ -27,6 +27,7 @@ import {
   parseDelimitedTextFields,
   parseDelimitedTextLayer,
 } from "./delimited-text";
+import { writeInPlaceWithAndroidFallback } from "./android-content-uri";
 import { IS_MAS_BUILD } from "./build-flags";
 import type { DuckDbVectorFile } from "./duckdb-vector-loader";
 import {
@@ -38,6 +39,7 @@ import {
 import type { GeotaggedPhotoResult } from "./geotagged-photos";
 import { PHOTO_IMAGE_EXTENSIONS, isPhotoDropFileName, isPhotoFileName } from "./geotagged-photos";
 import { projectedGeoJsonCrs } from "./crs-utils";
+import { nativeFileDialogFilters, type FileDialogFilter } from "./file-dialog-filters";
 import { parseGpxLayer } from "./gpx";
 import { isTauri } from "./is-tauri";
 import { SHAPEFILE_COMPANION_EXTENSIONS, shapefileCompanionPathsFromSelection } from "./mas-build";
@@ -71,10 +73,7 @@ function browserSafeFileName(path: string): string {
   return path.split(/[/\\]/).pop() || "project.geolibre.json";
 }
 
-export interface FileDialogFilter {
-  name: string;
-  extensions: string[];
-}
+export type { FileDialogFilter } from "./file-dialog-filters";
 
 interface PickLocalPathOptions {
   accept?: string;
@@ -90,6 +89,7 @@ interface PickSavePathOptions {
 
 interface LocalDataFileOptions {
   filters: FileDialogFilter[];
+  androidFilters?: FileDialogFilter[];
   accept: string;
   readBinary?: boolean;
   readText?: boolean;
@@ -2462,7 +2462,7 @@ export async function openLocalDataFileWithFallback(options: LocalDataFileOption
   if (isTauri()) {
     const selected = await open({
       multiple: false,
-      filters: options.filters,
+      filters: nativeFileDialogFilters(options.filters, options.androidFilters),
     });
     if (!selected || typeof selected !== "string") return null;
     const data = options.readBinary ? toArrayBuffer(await readFile(selected)) : undefined;
@@ -2726,13 +2726,33 @@ export async function saveProjectFile(
  * Save a project directly to an already-known local path without prompting.
  * Falls back to the save dialog when not running in Tauri (the browser never
  * has a writable filesystem path) or when the path is an HTTP(S) URL.
+ *
+ * @param content - The serialized project to write.
+ * @param path - The path the project was opened from or last saved to.
+ * @param fallbackName - File name for the save dialog when an attempted
+ *   in-place write is refused, and only when the path carries no usable name of
+ *   its own. The two branches below never attempt one, so they pass the path
+ *   itself as the dialog's name and ignore this.
+ * @returns The path actually written, or null if a fallback dialog was
+ *   cancelled.
  */
-export async function saveProjectFileToPath(content: string, path: string): Promise<string | null> {
+export async function saveProjectFileToPath(
+  content: string,
+  path: string,
+  fallbackName?: string,
+): Promise<string | null> {
   if (!isTauri() || isHttpUrl(path)) {
     return saveProjectFile(content, path);
   }
-  await writeTextFile(path, content);
-  return path;
+  // On Android a project opened through the document picker carries a read-only
+  // `content://` grant, so writing back to it is refused and Save fails outright
+  // (GeoLibre#1833). The save dialog asks Android to *create* the document,
+  // which does grant write, so the fallback below recovers; see
+  // `writeInPlaceWithAndroidFallback` for why it cannot lose data.
+  return writeInPlaceWithAndroidFallback(content, path, fallbackName, {
+    write: writeTextFile,
+    saveAs: saveProjectFile,
+  });
 }
 
 /**
