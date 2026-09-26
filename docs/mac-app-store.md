@@ -87,6 +87,29 @@ If a future feature genuinely needs to accept an inbound connection, re-adding
 the entitlement is not sufficient on its own: describe the functionality in **App
 Review Information** before submitting, or the automated check rejects it again.
 
+### Share.GeoLibre sign-in uses a custom URI, not a listener
+
+The MAS desktop build retains Share.GeoLibre project sign-in and Settings →
+Environment → session management. Its PKCE consent opens the system browser;
+the exact registered callback `org.geolibre.desktop:/oauth/callback` returns
+through the installed app's OS URI handler. No socket binds, so this does
+**not** require `com.apple.security.network.server`. The app starts the
+callback listener before accepting a sign-in; a callback that launches a cold
+process has no pending verifier and shows a restart-sign-in message rather than
+exchanging its code. A late callback from a timed-out or cancelled consent is
+ignored so it cannot interrupt an immediate retry. A fresh management consent
+lasts at most five minutes,
+has no refresh token, and stays in memory only. The desktop project's refresh
+credential is also memory-only and is lost when the app quits. Pasted personal
+API tokens remain a separate optional fallback.
+
+For the shipped `https://share.geolibre.app` origin, authenticated desktop
+requests use native HTTP with redirects disabled so a redirected Bearer header
+cannot cross hosts. Self-hosted share origins use browser fetch and must allow
+the Tauri webview origin in CORS; the MAS sandbox's `network.client`
+entitlement permits those outgoing connections. Neither path adds an inbound
+listener or changes the `network.server` ban.
+
 Everything client-side is unchanged and fully functional: MapLibre/deck.gl
 rendering, Add Data for local and remote files, DuckDB-WASM vector reading,
 Whitebox WASM tools, Turf/Pyodide vector tools, browser-engine conversions,
@@ -156,12 +179,37 @@ The sandboxed app can be smoke-tested by running the built
 bundle should show `com.apple.security.app-sandbox`, and must **not** show
 `com.apple.security.network.server`.
 
+For an OAuth release smoke, **install** the signed `.app` before testing the
+URI association. Configure the issuer with the `geolibre-desktop` client and
+the exact callback above, then use Settings → Environment to sign in via the
+system browser. Verify a matching callback completes only while consent is
+pending, a cold callback asks for a restart, a second management consent
+lists sessions, and revoking the current project session signs the app out.
+Repeat the URI roundtrip with installed Windows/MSIX and Linux packages on
+their respective OS runners; compiling a package on macOS does not verify
+their protocol associations. Check packaged logs for redacted callback query
+parameters, and check the app signature again for the missing
+`com.apple.security.network.server` entitlement.
+
 ## CI: the `mas-store.yml` workflow
 
-`workflow_dispatch` only, mirroring `msix-store.yml`: it builds the universal
-sandboxed app, signs it, verifies the sandbox entitlement, produces the signed
-`.pkg`, and uploads it as the `geolibre-mas-pkg` artifact. It does not touch
-GitHub releases and does not upload to App Store Connect.
+Runs on each **published GitHub release** (matching `release.yml`, `android.yml`
+and `ios.yml`) and on demand via the "Run workflow" button: it builds the
+universal sandboxed app, signs it, verifies the sandbox entitlement, produces the
+signed `.pkg`, and uploads it as the `geolibre-mas-pkg` artifact. On a release
+run it also attaches that `.pkg` to the release, so the exact submitted bytes for
+a tag remain available after the CI artifact's retention window. It never uploads
+to App Store Connect — that step stays manual (see *Submitting* below).
+
+> A MAS-signed `.pkg` can only be installed through the App Store; downloading it
+> from the releases page gets you a package that will not install. It is attached
+> as a submission archive, not as a macOS download. Point users at the App Store
+> listing, the Homebrew cask, or the Developer ID `.dmg` from `release.yml`.
+
+A missing-secrets run is handled by the `secrets-gate` job: on a
+`workflow_dispatch` it is a hard error (you asked for a `.pkg` and cannot get
+one), while on a release it logs a warning and skips the macOS job so an
+otherwise-good release does not go red.
 
 Required repository secrets:
 
@@ -191,8 +239,11 @@ Creating the inputs (Apple Developer account required):
    apps). This is already done for GeoLibre Desktop, App Store ID `6796848769`
    (the numeric listing identifier App Store Connect labels "Apple ID" on the App
    Information page), so later releases start at step 2.
-2. Download the `geolibre-mas-pkg` artifact and upload the `.pkg` with the
-   **Transporter** app (or `xcrun altool --upload-app -f <pkg> -t macos`).
+2. Download the `.pkg` — from the `geolibre-mas-pkg` artifact of the release's
+   workflow run, or from the release's own
+   `GeoLibre.Desktop_<version>_universal_mas.pkg` asset once the artifact has
+   expired — and upload it with the **Transporter** app (or
+   `xcrun altool --upload-app -f <pkg> -t macos`).
 3. Fill in screenshots, description, and the privacy questionnaire
    (see `docs/privacy.md`; the app makes no tracking calls).
 4. In the review notes, mention that processing engines run client-side as

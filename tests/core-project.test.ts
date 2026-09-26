@@ -4,8 +4,10 @@ import {
   DEFAULT_BASEMAP,
   DEFAULT_LAYER_STYLE,
   DEFAULT_STORY_MAP,
+  createDefaultPrintLayout,
   createEmptyProject,
   createSampleStoryMap,
+  normalizeModelGraph,
   parseProject,
   parseStoryMapCsv,
   parseStoryMapJson,
@@ -19,6 +21,110 @@ import {
 import { geojsonLayer } from "./helpers/layer-fixtures";
 
 describe("project parsing", () => {
+  it("discards session raster URLs on save and on loading older projects", () => {
+    const layer = geojsonLayer({
+      type: "cog",
+      metadata: { localBytesUrl: "blob:expired", localFilePath: "/data/image.tif" },
+    });
+    const project = { ...createEmptyProject(), layers: [layer] };
+    assert.equal(JSON.parse(serializeProject(project)).layers[0].metadata.localBytesUrl, undefined);
+    const reopened = parseProject(JSON.stringify(project)).layers[0];
+    assert.equal(reopened.metadata.localBytesUrl, undefined);
+    assert.equal(reopened.metadata.localFilePath, "/data/image.tif");
+    assert.equal(layer.metadata.localBytesUrl, "blob:expired");
+  });
+  it("restores portable WMS URLs when saving a desktop-routed layer", () => {
+    const tile = "https://example.com/wms?BBOX={bbox-epsg-3857}";
+    const routed = `geolibre-wms://tile?url=${encodeURIComponent(tile).replaceAll(
+      "%7Bbbox-epsg-3857%7D",
+      "{bbox-epsg-3857}",
+    )}`;
+    const layer = {
+      ...geojsonLayer({ id: "wms" }),
+      type: "wms" as const,
+      source: { type: "raster" as const, tiles: [routed] },
+      geojson: undefined,
+    };
+
+    const saved = projectFromStore({
+      projectName: "Portable WMS",
+      mapView: { center: [0, 0], zoom: 2, bearing: 0, pitch: 0 },
+      basemapStyleUrl: DEFAULT_BASEMAP,
+      basemapVisible: true,
+      basemapOpacity: 1,
+      layers: [layer],
+      preferences: createEmptyProject().preferences,
+      metadata: {},
+    });
+
+    assert.equal(saved.layers[0].source.tiles?.[0], tile);
+    assert.equal(layer.source.tiles[0], routed);
+  });
+
+  it("does not save an invalid URL extracted from a desktop WMS route", () => {
+    const routed = "geolibre-wms://tile?url=https%3A%2F%2F";
+    const layer = {
+      ...geojsonLayer({ id: "wms" }),
+      type: "wms" as const,
+      source: { type: "raster" as const, tiles: [routed] },
+      geojson: undefined,
+    };
+    const saved = projectFromStore({
+      projectName: "Invalid routed WMS",
+      mapView: { center: [0, 0], zoom: 2, bearing: 0, pitch: 0 },
+      basemapStyleUrl: DEFAULT_BASEMAP,
+      basemapVisible: true,
+      basemapOpacity: 1,
+      layers: [layer],
+      preferences: createEmptyProject().preferences,
+      metadata: {},
+    });
+
+    assert.equal(saved.layers[0].source.tiles?.[0], routed);
+  });
+
+  it("preserves layer style fields missing from a legacy top-level style", () => {
+    const base = createEmptyProject("Partial legacy style");
+    const layer = geojsonLayer({
+      id: "cities",
+      style: {
+        ...DEFAULT_LAYER_STYLE,
+        markerEnabled: true,
+        markerShape: "triangle",
+        markerColor: "#ef4444",
+        markerSize: 24,
+      },
+    });
+    const applied = applyProjectToStore({
+      ...base,
+      layers: [layer],
+      styles: {
+        cities: { fillColor: "#22c55e" } as typeof DEFAULT_LAYER_STYLE,
+      },
+    });
+
+    assert.equal(applied.layers[0].style.fillColor, "#22c55e");
+    assert.equal(applied.layers[0].style.markerEnabled, true);
+    assert.equal(applied.layers[0].style.markerShape, "triangle");
+    assert.equal(applied.layers[0].style.markerColor, "#ef4444");
+    assert.equal(applied.layers[0].style.markerSize, 24);
+  });
+
+  it("round-trips a custom blank background color and defaults legacy projects", () => {
+    const base = createEmptyProject("Blank background");
+    const customized = parseProject(serializeProject({ ...base, blankBackgroundColor: "#1f2937" }));
+    assert.equal(customized.blankBackgroundColor, "#1f2937");
+
+    const legacy = { ...base };
+    delete legacy.blankBackgroundColor;
+    assert.equal(parseProject(serializeProject(legacy)).blankBackgroundColor, null);
+    assert.equal(
+      parseProject(serializeProject({ ...base, blankBackgroundColor: "not-a-color" }))
+        .blankBackgroundColor,
+      null,
+    );
+  });
+
   it("preserves a valid selected layer and drops a dangling selection", () => {
     const base = createEmptyProject("Selection");
     const layer = geojsonLayer({ id: "chosen" });
@@ -147,6 +253,25 @@ describe("project parsing", () => {
     assert.equal(reloaded.preferences.map.projection, "mercator");
   });
 
+  it("round-trips terrain and defaults legacy projects to terrain off", () => {
+    const base = createEmptyProject("Terrain");
+    assert.equal(base.preferences.map.terrainEnabled, false);
+    const enabled = {
+      ...base,
+      preferences: {
+        ...base.preferences,
+        map: { ...base.preferences.map, terrainEnabled: true },
+      },
+    };
+    assert.equal(parseProject(serializeProject(enabled)).preferences.map.terrainEnabled, true);
+
+    const legacy = structuredClone(base) as unknown as {
+      preferences: { map: Record<string, unknown> };
+    };
+    delete legacy.preferences.map.terrainEnabled;
+    assert.equal(parseProject(JSON.stringify(legacy)).preferences.map.terrainEnabled, false);
+  });
+
   it("round-trips the scale unit preference and defaults unknown values to metric", () => {
     const base = createEmptyProject("Scale");
     assert.equal(base.preferences.map.scaleUnit, "metric");
@@ -258,6 +383,97 @@ describe("project parsing", () => {
 
     const reparsed = parseProject(serializeProject(project)).layers[0] as Record<string, unknown>;
     assert.ok(!("embedFilter" in reparsed));
+  });
+
+  it("strips feed-rebuilt attribute rows marked as transient", () => {
+    const layer = {
+      ...geojsonLayer({ id: "moving-feed" }),
+      type: "czml" as const,
+      source: {
+        type: "czml" as const,
+        czmlData: [{ id: "document", version: "1.0" }, { id: "satellite-1" }],
+        attribution: "Example provider",
+      },
+      metadata: {
+        transientGeojson: true,
+        transientCzml: true,
+        feed: "satellites",
+      },
+    } as unknown as Parameters<typeof projectFromStore>[0]["layers"][number];
+    const project = projectFromStore({
+      projectName: "Moving feed",
+      mapView: { center: [0, 0], zoom: 2, bearing: 0, pitch: 0 },
+      basemapStyleUrl: DEFAULT_BASEMAP,
+      basemapVisible: true,
+      basemapOpacity: 1,
+      layers: [layer],
+      preferences: createEmptyProject().preferences,
+      metadata: {},
+    });
+
+    assert.equal(project.layers[0].geojson, undefined);
+    assert.equal(project.layers[0].source.czmlData, undefined);
+    assert.equal(project.layers[0].source.attribution, "Example provider");
+    assert.equal(project.layers[0].metadata.feed, "satellites");
+  });
+
+  it("keeps quick filters, which are project state rather than session state", () => {
+    // The contrast with the test above is the point: `timeFilter`/`embedFilter`
+    // are set at runtime by the Time Slider and the host page, but a quick
+    // filter is something the author chose and expects to find again — and it
+    // persists as control state, not as a compiled expression, so it can be
+    // reopened and changed.
+    const quickFilters = [
+      { id: "qf-1", field: "state", kind: "categorical", values: ["OR", "WA"] },
+      { id: "qf-2", field: "pop", kind: "range", min: 1000, max: null },
+    ];
+    const layer = {
+      ...geojsonLayer({ id: "cities" }),
+      quickFilters,
+    } as unknown as Parameters<typeof projectFromStore>[0]["layers"][number];
+    const project = projectFromStore({
+      projectName: "Filters",
+      mapView: { center: [0, 0], zoom: 2, bearing: 0, pitch: 0 },
+      basemapStyleUrl: DEFAULT_BASEMAP,
+      basemapVisible: true,
+      basemapOpacity: 1,
+      layers: [layer],
+      preferences: createEmptyProject().preferences,
+      metadata: {},
+    });
+
+    const reparsed = parseProject(serializeProject(project)).layers[0] as Record<string, unknown>;
+    assert.deepEqual(reparsed.quickFilters, quickFilters);
+  });
+
+  it("keeps an expression layer filter as project state", () => {
+    const filterExpression = [">=", ["get", "population"], 100_000];
+    const project = projectFromStore({
+      projectName: "Filtered cities",
+      mapView: { center: [0, 0], zoom: 2, bearing: 0, pitch: 0 },
+      basemapStyleUrl: DEFAULT_BASEMAP,
+      basemapVisible: true,
+      basemapOpacity: 1,
+      layers: [{ ...geojsonLayer({ id: "cities" }), filterExpression }],
+      preferences: createEmptyProject().preferences,
+      metadata: {},
+    });
+
+    const reparsed = parseProject(serializeProject(project)).layers[0];
+    assert.deepEqual(reparsed?.filterExpression, filterExpression);
+  });
+
+  it("drops an invalid expression layer filter on project load", () => {
+    const project = createEmptyProject("Invalid filter");
+    project.layers = [
+      {
+        ...geojsonLayer({ id: "cities" }),
+        filterExpression: ["unknown-filter", ["get", "population"]],
+      },
+    ];
+
+    const reparsed = parseProject(JSON.stringify(project));
+    assert.equal(reparsed.layers[0]?.filterExpression, undefined);
   });
 
   it("round-trips a legend config through projectFromStore", () => {
@@ -852,6 +1068,69 @@ describe("multi-map grid persistence", () => {
     assert.deepEqual(reparsed.secondaryMapViews?.[1].layerVisibility, {});
   });
 
+  it("omits primaryRenderer for a default MapLibre project", () => {
+    const project = projectFromStore({
+      projectName: "2D",
+      mapView: { center: [0, 0], zoom: 2, bearing: 0, pitch: 0 },
+      basemapStyleUrl: DEFAULT_BASEMAP,
+      basemapVisible: true,
+      basemapOpacity: 1,
+      layers: [],
+      preferences: createEmptyProject().preferences,
+      primaryRenderer: "maplibre",
+      metadata: {},
+    });
+    // The 2D map is the default, so a MapLibre project stays byte-identical to
+    // one written before the setting existed.
+    assert.equal(project.primaryRenderer, undefined);
+    assert.equal(parseProject(serializeProject(project)).primaryRenderer, undefined);
+  });
+
+  it("round-trips a Cesium primary renderer without a grid", () => {
+    const project = projectFromStore({
+      projectName: "3D",
+      mapView: { center: [-95, 40], zoom: 4, bearing: 0, pitch: 0 },
+      basemapStyleUrl: DEFAULT_BASEMAP,
+      basemapVisible: true,
+      basemapOpacity: 1,
+      layers: [],
+      preferences: createEmptyProject().preferences,
+      primaryRenderer: "cesium",
+      metadata: {},
+    });
+    assert.equal(project.primaryRenderer, "cesium");
+    // The renderer is independent of the grid: a single-pane Cesium project
+    // persists the renderer and no `mapLayout`.
+    assert.equal(project.mapLayout, undefined);
+    const reparsed = parseProject(serializeProject(project));
+    assert.equal(reparsed.primaryRenderer, "cesium");
+    assert.equal(applyProjectToStore(reparsed).primaryRenderer, "cesium");
+  });
+
+  it("falls back to the 2D map for an unknown primaryRenderer", () => {
+    const reparsed = parseProject(
+      JSON.stringify({
+        version: "0.2.0",
+        name: "Bad renderer",
+        mapView: { center: [0, 0], zoom: 2, bearing: 0, pitch: 0 },
+        primaryRenderer: "webgpu",
+      }),
+    );
+    assert.equal(reparsed.primaryRenderer, undefined);
+    assert.equal(applyProjectToStore(reparsed).primaryRenderer, "maplibre");
+  });
+
+  it("opens a project written before #2217 on the 2D map", () => {
+    const reparsed = parseProject(
+      JSON.stringify({
+        version: "0.2.0",
+        name: "Legacy",
+        mapView: { center: [0, 0], zoom: 2, bearing: 0, pitch: 0 },
+      }),
+    );
+    assert.equal(applyProjectToStore(reparsed).primaryRenderer, "maplibre");
+  });
+
   it("ignores a 1x1 grid so single-map files stay clean", () => {
     const reparsed = parseProject(
       JSON.stringify({
@@ -867,9 +1146,54 @@ describe("multi-map grid persistence", () => {
 });
 
 describe("app store", () => {
+  it("normalizes Blank background colors written through the store", () => {
+    useAppStore.getState().setBlankBackgroundColor("#123abc");
+    assert.equal(useAppStore.getState().blankBackgroundColor, "#123abc");
+    useAppStore.getState().setBlankBackgroundColor("invalid");
+    assert.equal(useAppStore.getState().blankBackgroundColor, null);
+  });
+
   beforeEach(() => {
     useAppStore.getState().newProject({ name: "Test Project" });
     useAppStore.getState().clearRecentProjects();
+  });
+
+  it("switches the primary renderer without disturbing the project", () => {
+    const store = useAppStore.getState();
+    store.setMapView({ center: [-122.4, 37.8], zoom: 9, bearing: 30, pitch: 45 });
+    const layerId = useAppStore.getState().addGeoJsonLayer("Cities", {
+      type: "FeatureCollection",
+      features: [],
+    });
+    const before = useAppStore.getState();
+    assert.equal(before.primaryRenderer, "maplibre");
+
+    useAppStore.getState().setPrimaryRenderer("cesium");
+    const after = useAppStore.getState();
+    assert.equal(after.primaryRenderer, "cesium");
+    // Switching engines changes what draws the project, never the project: the
+    // camera, layers, basemap, and grid all carry across untouched.
+    assert.deepEqual(after.mapView, before.mapView);
+    assert.deepEqual(
+      after.layers.map((layer) => layer.id),
+      [layerId],
+    );
+    assert.equal(after.basemapStyleUrl, before.basemapStyleUrl);
+    assert.deepEqual(after.mapLayout, before.mapLayout);
+    assert.deepEqual(after.secondaryMapViews, before.secondaryMapViews);
+    // The choice is project state, so it marks the project dirty.
+    assert.equal(after.isDirty, true);
+
+    useAppStore.getState().setPrimaryRenderer("maplibre");
+    assert.equal(useAppStore.getState().primaryRenderer, "maplibre");
+  });
+
+  it("ignores a no-op primary renderer change", () => {
+    const before = useAppStore.getState();
+    assert.equal(before.isDirty, false);
+    useAppStore.getState().setPrimaryRenderer("maplibre");
+    // Re-selecting the active renderer must not dirty a freshly opened project.
+    assert.equal(useAppStore.getState().isDirty, false);
   });
 
   it("adds, selects, moves, and removes layers consistently", () => {
@@ -1470,5 +1794,183 @@ describe("primary mapView normalization", () => {
     assert.equal(applied.mapView.zoom, 0);
     assert.equal(applied.mapView.pitch, 85);
     assert.equal(applied.mapView.bearing, 270);
+  });
+});
+
+describe("normalizeModelGraph", () => {
+  it("supplies an empty edge list when the key is missing entirely", () => {
+    // A hand-edited file without `edges` used to reach the canvas as
+    // `edges: undefined`, and the renderer's `graph.edges.map(...)` then threw
+    // out of render — past the importer's try/catch — into the error boundary,
+    // instead of showing the friendly "not a model" message.
+    const graph = normalizeModelGraph({
+      nodes: [{ id: "a", kind: "input", x: 10, y: 20, layerId: "roads" }],
+    });
+    assert.deepEqual(graph?.edges, []);
+    assert.equal(graph?.nodes.length, 1);
+  });
+
+  it("drops edges that do not connect two surviving nodes", () => {
+    const graph = normalizeModelGraph({
+      nodes: [
+        { id: "a", kind: "input", x: 0, y: 0 },
+        { id: "b", kind: "output", x: 0, y: 0 },
+        { id: "", kind: "tool", x: 0, y: 0 },
+      ],
+      edges: [
+        { id: "e1", from: "a", fromPort: "out", to: "b", toPort: "in" },
+        { id: "e2", from: "a", fromPort: "out", to: "ghost", toPort: "in" },
+        { id: "e3", from: "a", fromPort: "out", to: "a", toPort: "in" },
+      ],
+    });
+    assert.deepEqual(
+      graph?.edges.map((edge) => edge.id),
+      ["e1"],
+    );
+  });
+
+  it("rejects a node with an unknown kind rather than passing it to the runner", () => {
+    const graph = normalizeModelGraph({
+      nodes: [
+        { id: "a", kind: "wat", x: 0, y: 0 },
+        { id: "b", kind: "output", x: 0, y: 0 },
+      ],
+      edges: [],
+    });
+    assert.deepEqual(
+      graph?.nodes.map((node) => node.id),
+      ["b"],
+    );
+  });
+
+  it("returns null for a value carrying no usable nodes", () => {
+    assert.equal(normalizeModelGraph(null), null);
+    assert.equal(normalizeModelGraph({ nodes: [] }), null);
+    assert.equal(normalizeModelGraph({ nodes: "nope" }), null);
+  });
+
+  it("coerces a non-finite coordinate instead of laying the node out at NaN", () => {
+    const graph = normalizeModelGraph({
+      nodes: [{ id: "a", kind: "input", x: "left", y: Number.NaN }],
+    });
+    assert.deepEqual([graph?.nodes[0].x, graph?.nodes[0].y], [0, 0]);
+  });
+});
+
+describe("print layout persistence", () => {
+  beforeEach(() => {
+    useAppStore.getState().newProject({ name: "Layout Project" });
+  });
+
+  it("omits an untouched composer so the saved file is unchanged by this feature", () => {
+    const project = projectFromStore({
+      ...useAppStore.getState(),
+      metadata: {},
+    });
+    assert.equal(project.printLayout, undefined);
+  });
+
+  it("saves the composer settings once they differ from the defaults", () => {
+    useAppStore.getState().setPrintLayout({
+      ...createDefaultPrintLayout(),
+      title: "Filière dentaire par régions",
+      paperSize: "a3",
+      orientation: "portrait",
+    });
+    const saved = parseProject(
+      serializeProject(projectFromStore({ ...useAppStore.getState(), metadata: {} })),
+    );
+    assert.equal(saved.printLayout?.title, "Filière dentaire par régions");
+    assert.equal(saved.printLayout?.paperSize, "a3");
+    assert.equal(saved.printLayout?.orientation, "portrait");
+  });
+
+  it("restores the saved composer settings when the project is loaded", () => {
+    const project = {
+      ...createEmptyProject("Saved layout"),
+      printLayout: {
+        ...createDefaultPrintLayout(),
+        title: "Saved title",
+        orientation: "portrait" as const,
+        showNorthArrow: false,
+      },
+    };
+    useAppStore.getState().loadProject(project);
+    const restored = useAppStore.getState().printLayout;
+    assert.equal(restored.title, "Saved title");
+    assert.equal(restored.orientation, "portrait");
+    assert.equal(restored.showNorthArrow, false);
+  });
+
+  it("resets to the defaults for a project saved without a layout", () => {
+    useAppStore.getState().setPrintLayout({
+      ...createDefaultPrintLayout(),
+      title: "Previous project",
+      paperSize: "a3",
+    });
+    // The bug behind discussion #1992: opening another project must not leave
+    // the previous project's composer settings in place.
+    useAppStore.getState().loadProject(createEmptyProject("Next"));
+    assert.deepEqual(useAppStore.getState().printLayout, createDefaultPrintLayout());
+
+    useAppStore.getState().setPrintLayout({
+      ...createDefaultPrintLayout(),
+      title: "Previous project",
+    });
+    useAppStore.getState().newProject({ name: "Fresh" });
+    assert.deepEqual(useAppStore.getState().printLayout, createDefaultPrintLayout());
+  });
+
+  it("clears composer blocks that name a layer the loaded project does not carry", () => {
+    const layer = geojsonLayer({ id: "kept" });
+    const applied = applyProjectToStore({
+      ...createEmptyProject("Orphans"),
+      layers: [layer],
+      printLayout: {
+        ...createDefaultPrintLayout(),
+        showDataTable: true,
+        tableLayerId: "deleted",
+        showDataChart: true,
+        chartLayerId: "kept",
+      },
+    });
+    assert.equal(applied.printLayout.tableLayerId, "");
+    assert.equal(applied.printLayout.showDataTable, false);
+    assert.equal(applied.printLayout.chartLayerId, "kept");
+  });
+
+  it("clears a composer block when its layer is deleted from the open project", () => {
+    const store = useAppStore.getState();
+    const kept = store.addGeoJsonLayer("Kept", { type: "FeatureCollection", features: [] });
+    const doomed = useAppStore
+      .getState()
+      .addGeoJsonLayer("Doomed", { type: "FeatureCollection", features: [] });
+    useAppStore.getState().setPrintLayout({
+      ...createDefaultPrintLayout(),
+      showDataTable: true,
+      tableLayerId: doomed,
+      showDataChart: true,
+      chartLayerId: kept,
+    });
+
+    useAppStore.getState().removeLayer(doomed);
+
+    // Otherwise a save taken before the composer is next opened would write a
+    // block pointing at a layer the file no longer carries.
+    const after = useAppStore.getState().printLayout;
+    assert.equal(after.tableLayerId, "");
+    assert.equal(after.showDataTable, false);
+    assert.equal(after.chartLayerId, kept);
+    assert.equal(after.showDataChart, true);
+  });
+
+  it("ignores a write that changes nothing, so opening the composer is not an edit", () => {
+    assert.equal(useAppStore.getState().isDirty, false);
+    // The dialog replays its seeded values into the store on mount.
+    useAppStore.getState().setPrintLayout(createDefaultPrintLayout());
+    assert.equal(useAppStore.getState().isDirty, false);
+
+    useAppStore.getState().setPrintLayout({ ...createDefaultPrintLayout(), title: "Edited" });
+    assert.equal(useAppStore.getState().isDirty, true);
   });
 });

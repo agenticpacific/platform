@@ -1,9 +1,10 @@
 import { useAppStore } from "@geolibre/core";
 import type { TFunction } from "i18next";
-import maplibregl from "maplibre-gl";
+import type * as maplibregl from "maplibre-gl";
 import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
-import type { MapController } from "@geolibre/map";
+import type { MapEngine } from "@geolibre/map";
+import { createEnginePopup, engineStyleMap } from "../lib/engine-style-map";
 import { bandMeasure } from "../lib/netcdf-band-axis";
 import {
   displayUnits,
@@ -90,6 +91,26 @@ function valueRows(
 }
 
 /**
+ * Build every label/value row shown for a clicked NetCDF grid cell.
+ *
+ * @param state Layer grids and metadata.
+ * @param pixel Cell under the click.
+ * @param t Translator for channel and coordinate labels.
+ * @returns Display rows in popup order.
+ */
+export function netcdfIdentifyRows(
+  state: NetcdfLayerState,
+  pixel: GridPixel,
+  t: TFunction,
+): Array<[string, string]> {
+  return [
+    ...valueRows(state, pixel, t),
+    [t("netcdfIdentify.coordinates"), `${pixel.lng.toFixed(5)}, ${pixel.lat.toFixed(5)}`],
+    [t("netcdfIdentify.cell"), `${pixel.row}, ${pixel.column}`],
+  ];
+}
+
+/**
  * Bridges the store's `identifyLayerId` to a NetCDF image layer's retained grid.
  *
  * The counterpart of `useRasterIdentify` for the layers the NetCDF dialog bakes
@@ -113,7 +134,7 @@ function valueRows(
  *   the map finished loading.
  */
 export function useNetcdfIdentify(
-  mapControllerRef: React.RefObject<MapController | null>,
+  mapControllerRef: React.RefObject<MapEngine | null>,
   mapReadyGeneration: number,
 ): void {
   const { t } = useTranslation();
@@ -126,7 +147,10 @@ export function useNetcdfIdentify(
   });
 
   useEffect(() => {
-    const map = mapControllerRef.current?.getMap();
+    // Either 2D engine: the click, cursor and popup go through the surface
+    // MapLibre and mapbox-gl share (see engineStyleMap).
+    const engine = mapControllerRef.current;
+    const map = engineStyleMap(engine);
     if (!activeLayerId || !map) return;
 
     const canvas = map.getCanvas();
@@ -160,11 +184,7 @@ export function useNetcdfIdentify(
 
       const container = document.createElement("div");
       container.className = "space-y-0.5 text-xs";
-      const rows: Array<[string, string]> = [
-        ...valueRows(state, pixel, t),
-        [t("netcdfIdentify.coordinates"), `${pixel.lng.toFixed(5)}, ${pixel.lat.toFixed(5)}`],
-        [t("netcdfIdentify.cell"), `${pixel.row}, ${pixel.column}`],
-      ];
+      const rows = netcdfIdentifyRows(state, pixel, t);
       for (const [label, value] of rows) {
         const line = document.createElement("div");
         const name = document.createElement("span");
@@ -178,7 +198,7 @@ export function useNetcdfIdentify(
       // it MapLibre's own always-white `.maplibregl-popup-content` survives, and
       // the rows below — which inherit the theme foreground — render white on
       // white in dark mode.
-      popup = new maplibregl.Popup({
+      popup = createEnginePopup(engine, {
         className: "geolibre-identify-popup",
         closeButton: true,
         closeOnClick: false,

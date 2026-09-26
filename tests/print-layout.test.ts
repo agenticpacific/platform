@@ -7,6 +7,7 @@ import {
   pageMm,
   pagePx,
   resolvePageSize,
+  scaleZoomTarget,
   type LayoutOptions,
   type LegendEntry,
 } from "../apps/geolibre-desktop/src/lib/print-layout";
@@ -19,13 +20,19 @@ import {
  */
 function recordingCanvas(): {
   canvas: HTMLCanvasElement;
-  fills: { text: string; textAlign: string; textBaseline: string }[];
+  fills: { text: string; x: number; y: number; textAlign: string; textBaseline: string }[];
   fillRects: { w: number; h: number; fillStyle: string }[];
   imageBoxes: { w: number; h: number }[];
   arcs: number;
   polylines: number[];
 } {
-  const fills: { text: string; textAlign: string; textBaseline: string }[] = [];
+  const fills: {
+    text: string;
+    x: number;
+    y: number;
+    textAlign: string;
+    textBaseline: string;
+  }[] = [];
   // Filled rectangles (swatches, chart bars), with the fill colour in effect.
   const fillRects: { w: number; h: number; fillStyle: string }[] = [];
   // Drawn images (custom SVG marker icons), with the box each was drawn into,
@@ -43,9 +50,11 @@ function recordingCanvas(): {
     get(target, prop) {
       if (prop === "measureText") return () => ({ width: 10 });
       if (prop === "fillText") {
-        return (text: string) =>
+        return (text: string, x: number, y: number) =>
           fills.push({
             text,
+            x,
+            y,
             textAlign: String(target.textAlign),
             textBaseline: String(target.textBaseline),
           });
@@ -404,6 +413,44 @@ describe("drawLayout legend rendering", () => {
     // (Kept under the swatch cap below so this asserts the fit scaling alone.)
     assert.equal(render(400), 57.6);
     assert.equal(render(800), 28.8);
+  });
+
+  it("keeps ordinary rows compact beside a derived proportional ramp", () => {
+    const rec = recordingCanvas();
+    drawLayout(
+      rec.canvas,
+      baseOptions({
+        legend: [
+          {
+            id: "regions",
+            name: "Regions",
+            swatches: [
+              { color: "#111111", label: "Low" },
+              { color: "#222222", label: "High" },
+              { color: "#f59e0b", label: "Centroids: 2", size: 4 },
+              { color: "#f59e0b", label: "Centroids: 25", size: 14 },
+              { color: "#f59e0b", label: "Centroids: 48", size: 24 },
+            ],
+          },
+        ],
+      }),
+    );
+
+    const classSwatches = rec.fillRects.filter(
+      (rect) => rect.fillStyle === "#111111" || rect.fillStyle === "#222222",
+    );
+    assert.deepEqual(
+      classSwatches.map((rect) => [rect.w, rect.h]),
+      [
+        [8, 8],
+        [8, 8],
+      ],
+    );
+    const low = rec.fills.find((fill) => fill.text === "Low");
+    const high = rec.fills.find((fill) => fill.text === "High");
+    assert.ok(low && high);
+    assert.ok(high.y - low.y < 20, `ordinary rows were inflated: ${high.y - low.y}`);
+    assert.ok(rec.arcs >= 3, "expected the proportional centroid circles to be drawn");
   });
 
   it("caps an outsized proportional symbol instead of blanking the legend box", () => {
@@ -1102,5 +1149,57 @@ describe("drawLayout data blocks (GH #1324)", () => {
     assert.ok(rec.fills.some((f) => f.text === "5" && f.textAlign === "right"));
     // The path itself: one stroked polyline with a segment per point pair.
     assert.ok(rec.polylines.includes(2), "expected a stroked 2-segment polyline for the 3 points");
+  });
+});
+
+describe("scaleZoomTarget (#2475, GH #743)", () => {
+  it("halves the ground scale per zoom level", () => {
+    const target = scaleZoomTarget(10, 100_000, 50_000, 0, 24);
+    assert.ok(target);
+    assert.equal(target.zoom, 11);
+    assert.equal(target.clamped, false);
+    assert.equal(target.unchanged, false);
+    // And back out again.
+    assert.equal(scaleZoomTarget(10, 100_000, 400_000, 0, 24)?.zoom, 8);
+  });
+  it("reports a request the map cannot reach as clamped", () => {
+    // 1:1 from 1:100,000 is ~17 levels in; a map capped at 14 cannot get there.
+    const target = scaleZoomTarget(10, 100_000, 1, 0, 14);
+    assert.ok(target);
+    assert.equal(target.zoom, 14);
+    assert.equal(target.clamped, true, "the notice must fire on every renderer");
+    assert.equal(target.unchanged, false);
+    const out = scaleZoomTarget(10, 100_000, 1e12, 5, 24);
+    assert.equal(out?.zoom, 5);
+    assert.equal(out?.clamped, true);
+  });
+  it("flags a no-op so the caller recaptures without moving the camera", () => {
+    const same = scaleZoomTarget(10, 100_000, 100_000, 0, 24);
+    assert.equal(same?.unchanged, true);
+    assert.equal(same?.clamped, false);
+    // Already pinned at the ceiling: clamped *and* a no-op, so a MapLibre map
+    // would never emit the "idle" the recapture waits for.
+    const pinned = scaleZoomTarget(24, 100_000, 1, 0, 24);
+    assert.equal(pinned?.zoom, 24);
+    assert.equal(pinned?.clamped, true);
+    assert.equal(pinned?.unchanged, true);
+  });
+  it("prefers minZoom when a map reports limits the wrong way round", () => {
+    assert.equal(scaleZoomTarget(10, 100_000, 50_000, 12, 8)?.zoom, 12);
+  });
+  it("returns null rather than a NaN zoom for unusable inputs", () => {
+    assert.equal(scaleZoomTarget(10, 0, 50_000, 0, 24), null);
+    assert.equal(scaleZoomTarget(10, 100_000, 0, 0, 24), null);
+    assert.equal(scaleZoomTarget(10, 100_000, -5, 0, 24), null);
+    assert.equal(scaleZoomTarget(Number.NaN, 100_000, 50_000, 0, 24), null);
+    assert.equal(scaleZoomTarget(10, 100_000, 50_000, Number.NaN, 24), null);
+    assert.equal(scaleZoomTarget(10, 100_000, 50_000, 0, Number.POSITIVE_INFINITY), null);
+  });
+  it("rejects an infinite ratio instead of pinning the camera to a limit", () => {
+    // A long enough digit string parses to Infinity, which passes `> 0` and
+    // would otherwise send `wanted` to -Infinity and the camera to minZoom.
+    assert.equal(scaleZoomTarget(10, 100_000, Number.POSITIVE_INFINITY, 0, 24), null);
+    assert.equal(scaleZoomTarget(10, Number.POSITIVE_INFINITY, 50_000, 0, 24), null);
+    assert.equal(scaleZoomTarget(10, 100_000, Number("1".repeat(400)), 0, 24), null);
   });
 });

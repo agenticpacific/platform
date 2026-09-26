@@ -1,4 +1,8 @@
-import { isAllowedPluginManifestUrl } from "@geolibre/core";
+import {
+  createDefaultMapView,
+  isAllowedPluginManifestUrl,
+  normalizeMapViewState,
+} from "@geolibre/core";
 import { useEffect } from "react";
 import { create } from "zustand";
 import { normalizeStringList } from "../lib/string-lists";
@@ -53,6 +57,10 @@ export interface DesktopSettings {
    * Same "token in localStorage" trade-off as {@link shareToken}.
    */
   cesiumIonToken: string;
+  /** Device-local Mapbox access token, excluded from shared project files. */
+  mapboxAccessToken: string;
+  /** Device-local ArcGIS API key for the ArcGIS renderer, excluded from shared project files. */
+  arcgisApiKey: string;
   /**
    * AI Assistant provider profiles. Each profile bundles a provider, model, and
    * credential values. Stored here — device-local localStorage, not the shared
@@ -93,6 +101,12 @@ export interface StartupSettings {
   mode: StartupProjectMode;
   projectPath: string | null;
   projectName: string | null;
+  /** Projection used when startup does not restore or receive a project. */
+  globeByDefault: boolean;
+  /** Center used for the untitled workspace when no project is provided. */
+  center: [number, number];
+  /** Zoom used for the untitled workspace when no project is provided. */
+  zoom: number;
 }
 
 export interface ThemeSettings {
@@ -110,6 +124,17 @@ export interface UpdateSettings {
 }
 
 export interface DesktopLayoutSettings {
+  /**
+   * Whether the Browser (Data Source Manager) right panel is registered as
+   * visible. Unlike {@link layerPanelVisible} this does not describe a fixed
+   * dock slot: the Browser is a dockable right panel, so the flag is the
+   * persisted seed its registration hook applies on mount (open + collapsed onto
+   * its rail, or closed). Without it the panel reopened on every launch no
+   * matter what the Settings toggle said (#1935).
+   */
+  browserPanelVisible: boolean;
+  /** Same as {@link browserPanelVisible}, for the Comments right panel. */
+  commentsPanelVisible: boolean;
   layerPanelVisible: boolean;
   showProjectInfo: boolean;
   stylePanelVisible: boolean;
@@ -156,7 +181,11 @@ interface DesktopSettingsState {
   setDesktopSettings: (settings: DesktopSettings) => void;
 }
 
+let desktopSettingsAreTemporary = false;
+
 export const DEFAULT_DESKTOP_LAYOUT_SETTINGS: DesktopLayoutSettings = {
+  browserPanelVisible: true,
+  commentsPanelVisible: true,
   layerPanelVisible: true,
   showProjectInfo: true,
   stylePanelVisible: true,
@@ -187,6 +216,9 @@ export const DEFAULT_STARTUP_SETTINGS: StartupSettings = {
   mode: "default",
   projectPath: null,
   projectName: null,
+  globeByDefault: true,
+  center: [...createDefaultMapView().center],
+  zoom: createDefaultMapView().zoom,
 };
 
 export const DEFAULT_THEME_SETTINGS: ThemeSettings = {
@@ -201,6 +233,8 @@ const DEFAULT_DESKTOP_SETTINGS: DesktopSettings = {
   pluginManifestUrls: [],
   shareToken: "",
   cesiumIonToken: "",
+  mapboxAccessToken: "",
+  arcgisApiKey: "",
   aiProfiles: [],
   defaultAiProfileId: null,
   theme: DEFAULT_THEME_SETTINGS,
@@ -232,6 +266,9 @@ export function normalizeDesktopSettings(settings: unknown): DesktopSettings {
       isAllowedPluginManifestUrl,
     ),
     shareToken: typeof candidate.shareToken === "string" ? candidate.shareToken.trim() : "",
+    mapboxAccessToken:
+      typeof candidate.mapboxAccessToken === "string" ? candidate.mapboxAccessToken.trim() : "",
+    arcgisApiKey: typeof candidate.arcgisApiKey === "string" ? candidate.arcgisApiKey.trim() : "",
     cesiumIonToken:
       typeof candidate.cesiumIonToken === "string" ? candidate.cesiumIonToken.trim() : "",
     aiProfiles: normalizeAssistantProfiles(
@@ -252,6 +289,12 @@ export function normalizeDesktopSettings(settings: unknown): DesktopSettings {
 function normalizeStartupSettings(startup: unknown): StartupSettings {
   if (!startup || typeof startup !== "object") return DEFAULT_STARTUP_SETTINGS;
   const candidate = startup as Partial<StartupSettings>;
+  const view = normalizeMapViewState({
+    center: candidate.center,
+    zoom: candidate.zoom,
+    bearing: 0,
+    pitch: 0,
+  });
   const mode: StartupProjectMode =
     candidate.mode === "last" || candidate.mode === "specific" ? candidate.mode : "default";
   const projectPath =
@@ -266,6 +309,9 @@ function normalizeStartupSettings(startup: unknown): StartupSettings {
     mode: mode === "specific" && !projectPath ? "default" : mode,
     projectPath,
     projectName,
+    globeByDefault: typeof candidate.globeByDefault === "boolean" ? candidate.globeByDefault : true,
+    center: view.center,
+    zoom: view.zoom,
   };
 }
 
@@ -410,6 +456,14 @@ function normalizeDesktopLayoutSettings(layout: unknown): DesktopLayoutSettings 
   // cannot smuggle non-boolean values into the layout settings.
   const candidate = layout as Partial<DesktopLayoutSettings>;
   return {
+    browserPanelVisible:
+      typeof candidate.browserPanelVisible === "boolean"
+        ? candidate.browserPanelVisible
+        : DEFAULT_DESKTOP_LAYOUT_SETTINGS.browserPanelVisible,
+    commentsPanelVisible:
+      typeof candidate.commentsPanelVisible === "boolean"
+        ? candidate.commentsPanelVisible
+        : DEFAULT_DESKTOP_LAYOUT_SETTINGS.commentsPanelVisible,
     layerPanelVisible:
       typeof candidate.layerPanelVisible === "boolean"
         ? candidate.layerPanelVisible
@@ -456,8 +510,22 @@ export const useDesktopSettingsStore = create<DesktopSettingsState>((set) => ({
   setDesktopSettings: (settings) => set({ desktopSettings: normalizeDesktopSettings(settings) }),
 }));
 
+/** Apply settings supplied by an embed URL without replacing this browser's saved preferences. */
+export function applyTemporaryDesktopSettings(settings: unknown): void {
+  desktopSettingsAreTemporary = true;
+  useDesktopSettingsStore.getState().setDesktopSettings(normalizeDesktopSettings(settings));
+}
+
+export function shouldPersistDesktopSettings(): boolean {
+  return !desktopSettingsAreTemporary;
+}
+
 export function useDesktopSettingsPersistence() {
   useEffect(() => {
+    // Keep the entire shared-settings session ephemeral. Persisting a later
+    // user edit would serialize the remote baseline along with that edit and
+    // silently replace unrelated local preferences.
+    if (!shouldPersistDesktopSettings()) return;
     saveDesktopSettings(useDesktopSettingsStore.getState().desktopSettings);
 
     return useDesktopSettingsStore.subscribe((state, previous) => {

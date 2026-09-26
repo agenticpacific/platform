@@ -27,6 +27,7 @@ export interface LayoutOptions {
 
 const COMPACT_LAYOUT_VALUES = new Set(["compact", "embed", "iframe"]);
 const ICON_TOOLBAR_VALUES = new Set(["icon", "icons", "icon-only"]);
+const HIDDEN_TOOLBAR_VALUES = new Set(["hidden", "hide", "none", "off"]);
 const HIDDEN_PANEL_VALUES = new Set(["hidden", "hide", "none", "off"]);
 const MAP_ONLY_VALUES = new Set(["", "true", "1", "yes", "on"]);
 
@@ -35,6 +36,19 @@ export function useLayoutOptions(): LayoutOptions {
   // rebuild the layout object) from re-rendering every layout consumer.
   const layoutSettings = useDesktopSettingsStore(useShallow((s) => s.desktopSettings.layout));
   return useMemo(() => layoutOptionsFromLocation(layoutSettings), [layoutSettings]);
+}
+
+/**
+ * Whether a query string asks for the read-only `layout=viewer` chrome.
+ *
+ * Args:
+ *   search: The URL's query string.
+ *
+ * Returns:
+ *   True for a viewer launch.
+ */
+export function isViewerLayout(search: string): boolean {
+  return normalizedParam(new URLSearchParams(search).get("layout")) === "viewer";
 }
 
 export function layoutOptionsFromLocation(layoutSettings: DesktopLayoutSettings): LayoutOptions {
@@ -60,7 +74,7 @@ export function layoutOptionsFromLocation(layoutSettings: DesktopLayoutSettings)
   // truthy value (`?maponly=true`).
   const mapOnly =
     params.has("maponly") && MAP_ONLY_VALUES.has(normalizedParam(params.get("maponly")));
-  const viewer = layout === "viewer";
+  const viewer = isViewerLayout(window.location.search);
   // `maponly` implies `compact` so the map fills its container (the `<main>`
   // element gets `min-h-0`). This also forces `toolbarLabels` and
   // `showProjectInfo` to false below, which is harmless since the toolbar is
@@ -91,7 +105,7 @@ export function layoutOptionsFromLocation(layoutSettings: DesktopLayoutSettings)
     statusBarVisible: !mapOnly,
     stylePanelVisible,
     toolbarLabels,
-    toolbarVisible: !mapOnly,
+    toolbarVisible: !mapOnly && !HIDDEN_TOOLBAR_VALUES.has(toolbar),
     viewer,
   };
 }

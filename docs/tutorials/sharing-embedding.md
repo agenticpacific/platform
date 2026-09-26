@@ -2,14 +2,12 @@
 
 Once you have a map you like, you can publish it as a public link and embed it in any web page. This tutorial covers both. See [Embedding & Sharing](../user-guide/embedding.md) for the full reference.
 
-## 1. Set your share token
+## 1. Connect your account
 
-Sharing uploads to `share.geolibre.app` using a personal API token.
+Sharing uploads to `share.geolibre.app`.
 
-1. Open **Settings → Environment Variables**.
-2. Paste your token into the **Share.GeoLibre API token** field. Create one under Settings → API tokens at [share.geolibre.app/settings](https://share.geolibre.app/settings).
-
-You only need to do this once.
+- **Web app**: open **Project → Share...** and click **Sign in to share.geolibre.app**. Approve the access request in the popup that opens — you are connected for the browser session.
+- **GeoLibre Desktop**: paste a personal API token into **Settings → Environment Variables → Share.GeoLibre API token**. Create one under Settings → API tokens at [share.geolibre.app/settings](https://share.geolibre.app/settings). You only need to do this once.
 
 ## 2. Share the project
 
@@ -20,7 +18,7 @@ You only need to do this once.
    https://share.geolibre.app/you/my-map.geolibre.json
    ```
 
-The shared file captures the same layers, styles, plugin state, and map view as a local save.
+The shared file captures the same layers, styles, plugin state, and map view as a local save. Layers that read files on your computer are the exception: the dialog lists them as missing before you share, since `share.geolibre.app` stores the project file and never your data files. See [Sharing local data](../user-guide/projects.md#sharing-local-data) for how to host them instead.
 
 ## 3. Open the shared map
 
@@ -52,6 +50,7 @@ Adjust the look with parameters (they combine):
 - `layout=viewer` gives a read-only map: Layers, View, Controls, basemaps, and
   search/identify stay, while everything that edits the project is hidden.
 - `layout=compact` keeps a slim, icon-only toolbar.
+- `toolbar=none` hides the top toolbar while keeping panels and the status bar.
 - `panels=none` hides the side and bottom panels but keeps the toolbar.
 - `theme=dark` forces the dark theme on load.
 

@@ -1,3 +1,6 @@
+import { ShareAccountSection } from "./ShareAccountSection";
+import { supportsShareOAuth, useShareOAuthStore } from "../../lib/share-oauth";
+import { migrateMapboxTokenSettings } from "../../lib/mapbox-token-settings";
 import {
   DEFAULT_PROJECT_PREFERENCES,
   ELLIPSOIDS,
@@ -11,7 +14,6 @@ import {
   type ProjectPreferences,
   type RuntimeEnvironmentVariable,
 } from "@geolibre/core";
-import { closeRightPanel, collapseRightPanel, openRightPanel } from "@geolibre/plugins";
 import {
   Button,
   Dialog,
@@ -36,7 +38,7 @@ import {
   Select,
   cn,
 } from "@geolibre/ui";
-import type { MapController } from "@geolibre/map";
+import type { MapEngine } from "@geolibre/map";
 import {
   Bot,
   Braces,
@@ -55,6 +57,7 @@ import {
   LayoutPanelTop,
   MessageSquare,
   Moon,
+  PackageCheck,
   Palette,
   PanelLeft,
   PanelRight,
@@ -67,10 +70,22 @@ import {
   Type,
   Trash2,
   TriangleAlert,
+  Upload,
   Puzzle,
+  LoaderCircle,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ComponentType,
+  type ChangeEvent,
+  type ReactElement,
+  type RefObject,
+} from "react";
 import { Trans, useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import {
   DEFAULT_DESKTOP_LAYOUT_SETTINGS,
   DEFAULT_UI_PROFILE_SETTINGS,
@@ -91,12 +106,26 @@ import { COMMENTS_PANEL_ID } from "../../hooks/useRegisterCommentsPanel";
 import { useRightPanelState } from "../../hooks/useRightPanels";
 import type { ThemeMode } from "../../hooks/useThemeMode";
 import { isTauri } from "../../lib/is-tauri";
+import { applyRightPanelVisibility } from "../../lib/persisted-right-panel";
 import { COORDINATE_FORMATS, normalizeCoordinateFormat } from "../../lib/coordinate-format";
 import { THEME_SCHEMES, normalizeHexColor, type ThemeScheme } from "../../lib/theme-schemes";
 import { IS_MAS_BUILD } from "../../lib/build-flags";
+import { pluginDisplayName } from "../../lib/plugin-display-name";
+import {
+  LANGUAGE_PACK_MAX_BYTES,
+  LanguagePackError,
+  languagePackBaseUrl,
+  type InstalledLanguagePack,
+} from "../../lib/language-pack";
+import {
+  downloadLanguagePack,
+  getInstalledLanguagePack,
+  installLanguagePackFile,
+  removeLanguagePack,
+} from "../../i18n";
 import { resolveShareHost, shareHostLabel } from "../../lib/share-geolibre";
 import { IS_STORE_BUILD, type UpdateNotificationLevel } from "../../lib/updates";
-import { openProjectFile } from "../../lib/tauri-io";
+import { ensureStartupProjectSnapshot, openProjectFile } from "../../lib/tauri-io";
 import {
   DATA_SOURCE_CATALOG,
   DATA_SOURCE_SECTION_LABEL_KEYS,
@@ -115,7 +144,6 @@ import {
   PROVIDER_LABELS,
   scopeOsEnvToProject,
   type AssistantProfile,
-  type AssistantProviderId,
   type RuntimeEnv,
 } from "../../lib/assistant/provider";
 import { loadOsEnvVars, readOsEnv } from "../../lib/assistant/os-env";
@@ -127,6 +155,7 @@ import {
 import { AiSectionContent } from "./AiSectionContent";
 
 export type SettingsSection =
+  | "language"
   | "map"
   | "layout"
   | "appearance"
@@ -138,7 +167,12 @@ export type SettingsSection =
   | "startup";
 
 /** A field a deep-link can ask Settings to focus once the section renders. */
-export type SettingsFocusTarget = "shareToken" | "accentColor";
+export type SettingsFocusTarget =
+  | "shareToken"
+  | "cesiumToken"
+  | "mapboxToken"
+  | "arcgisKey"
+  | "accentColor";
 
 /** Window event letting any panel open Settings at a given section (no prop-drilling). */
 export const OPEN_SETTINGS_EVENT = "geolibre:open-settings";
@@ -170,7 +204,7 @@ interface SettingsDialogProps {
   buttonClassName?: string;
   buttonSize?: "default" | "sm" | "lg" | "icon" | null;
   iconClassName?: string;
-  mapControllerRef: RefObject<MapController | null>;
+  mapControllerRef: RefObject<MapEngine | null>;
   showLabels?: boolean;
   onOpenManagePlugins: () => void;
   /** Toggleable plugins for the Interface (UI profile) section (issue #500). */
@@ -181,11 +215,61 @@ interface SettingsDialogProps {
   onToggleThemeMode: () => void;
 }
 
+type TransComponents = Record<string, ReactElement>;
+
+type SettingsTransProps = {
+  i18nKey:
+    | "settings.env.tokenDescription"
+    | "settings.env.cesiumTokenDescription"
+    | "settings.env.mapboxTokenDescription"
+    | "settings.env.arcgisKeyDescription";
+  values?: { shareHost: string };
+  components?: TransComponents;
+};
+
+// TS 7 exhausts its instantiation depth when it expands Trans's catalog-wide
+// generics from this large generated locale type. Keep the key union explicit.
+const SettingsTrans = Trans as ComponentType<SettingsTransProps>;
+
+const mapboxTokenComponents: TransComponents = {
+  tokenLink: (
+    <a
+      className="underline"
+      href="https://account.mapbox.com/access-tokens/"
+      target="_blank"
+      rel="noreferrer noopener"
+    />
+  ),
+};
+
+const arcgisKeyComponents: TransComponents = {
+  keyLink: (
+    <a
+      className="underline"
+      href="https://developers.arcgis.com/documentation/security-and-authentication/api-key-authentication/"
+      target="_blank"
+      rel="noreferrer noopener"
+    />
+  ),
+};
+
+const cesiumTokenComponents: TransComponents = {
+  tokenLink: (
+    <a
+      className="underline"
+      href="https://ion.cesium.com/tokens"
+      target="_blank"
+      rel="noreferrer noopener"
+    />
+  ),
+};
+
 const SECTION_ITEMS: Array<{
   id: SettingsSection;
   labelKey: `settings.section.${SettingsSection}`;
   icon: typeof MapPinned;
 }> = [
+  { id: "language", labelKey: "settings.section.language", icon: Languages },
   { id: "map", labelKey: "settings.section.map", icon: MapPinned },
   { id: "layout", labelKey: "settings.section.layout", icon: LayoutPanelTop },
   {
@@ -241,11 +325,54 @@ interface DraftDesktopSettings {
   layout: DesktopLayoutSettings;
   shareToken: string;
   cesiumIonToken: string;
+  mapboxAccessToken: string;
+  arcgisApiKey: string;
   aiProfiles: AssistantProfile[];
   defaultAiProfileId: string | null;
   uiProfile: UiProfileSettings;
   updates: UpdateSettings;
   startup: StartupSettings;
+}
+
+/**
+ * The bare host to name in the privacy notice. A configured base URL may carry a
+ * scheme and a path (a self-hosted mirror often does); the notice only needs to
+ * say which host the locale code is sent to.
+ */
+function languagePackHostname(baseUrl: string): string {
+  try {
+    return new URL(baseUrl).host;
+  } catch {
+    return baseUrl;
+  }
+}
+
+/**
+ * The "installed from X on Y" line for an installed language pack.
+ *
+ * `installedAt` comes back from IndexedDB, which the i18n layer already treats
+ * as untrusted for the pack payload; the record's own timestamp gets the same
+ * treatment here. `Intl.DateTimeFormat.prototype.format` throws a `RangeError`
+ * on an invalid `Date`, and this renders inside the dialog, so an unparseable
+ * timestamp would take the whole Settings pane down. Drop the date instead.
+ */
+function installedPackDetail(
+  t: TFunction,
+  language: string,
+  installed: InstalledLanguagePack,
+): string {
+  const source =
+    installed.source === "download"
+      ? t("settings.languagePack.sourceOfficial")
+      : t("settings.languagePack.sourceFile");
+  const installedAt = new Date(installed.installedAt);
+  if (Number.isNaN(installedAt.getTime())) {
+    return t("settings.languagePack.installedDetailNoDate", { source });
+  }
+  return t("settings.languagePack.installedDetail", {
+    source,
+    date: new Intl.DateTimeFormat(language, { dateStyle: "medium" }).format(installedAt),
+  });
 }
 
 function createDraftId(): string {
@@ -257,7 +384,9 @@ function createDraftId(): string {
 function clonePreferences(preferences: ProjectPreferences): DraftPreferences {
   return {
     map: { ...preferences.map },
-    environmentVariables: preferences.environmentVariables.map((variable) => ({
+    environmentVariables: migrateMapboxTokenSettings(
+      preferences.environmentVariables,
+    ).variables.map((variable) => ({
       ...variable,
       id: createDraftId(),
     })),
@@ -268,11 +397,19 @@ function clonePreferences(preferences: ProjectPreferences): DraftPreferences {
   };
 }
 
-function cloneDesktopSettings(settings: DesktopSettings): DraftDesktopSettings {
+function cloneDesktopSettings(
+  settings: DesktopSettings,
+  preferences: ProjectPreferences,
+): DraftDesktopSettings {
   return {
     layout: { ...settings.layout },
     shareToken: settings.shareToken,
     cesiumIonToken: settings.cesiumIonToken,
+    mapboxAccessToken: migrateMapboxTokenSettings(
+      preferences.environmentVariables,
+      settings.mapboxAccessToken,
+    ).token,
+    arcgisApiKey: settings.arcgisApiKey,
     aiProfiles: settings.aiProfiles.map((p) => ({
       ...p,
       fieldValues: { ...p.fieldValues },
@@ -286,7 +423,7 @@ function cloneDesktopSettings(settings: DesktopSettings): DraftDesktopSettings {
       hiddenMenuItems: [...settings.uiProfile.hiddenMenuItems],
     },
     updates: { ...settings.updates },
-    startup: { ...settings.startup },
+    startup: { ...settings.startup, center: [...settings.startup.center] },
   };
 }
 
@@ -395,6 +532,16 @@ export function SettingsDialog({
   const shareBaseUrl = shareHostState.baseUrl;
   const shareHost = shareHostLabel();
   const shareSettingsUrl = shareBaseUrl ? `${shareBaseUrl}/settings` : null;
+  const shareTokenComponents: TransComponents = {
+    tokenLink: (
+      <a
+        className="underline"
+        href={shareSettingsUrl ?? undefined}
+        target="_blank"
+        rel="noreferrer noopener"
+      />
+    ),
+  };
   // No usable host (sharing turned off, or a configured address that was
   // rejected) means the token field is dead: it would authenticate against a
   // server this deployment never talks to. Say so instead of rendering guidance
@@ -406,6 +553,8 @@ export function SettingsDialog({
     shareHostState.status === "invalid"
       ? t("settings.env.tokenHostInvalid")
       : t("settings.env.tokenUnavailable");
+  const oauthSetupError = useShareOAuthStore((state) => state.setupError);
+  const oauthSupported = supportsShareOAuth();
   const { language, options: languageOptions, setLanguage } = useLanguage();
   const preferences = useAppStore((s) => s.preferences);
   const setPreferences = useAppStore((s) => s.setPreferences);
@@ -417,37 +566,41 @@ export function SettingsDialog({
   const showSettingsItem = (id: string) => isMenuItemVisible(desktopSettings.uiProfile, id);
   const [open, setOpen] = useState(false);
   const [section, setSection] = useState<SettingsSection>("map");
-  // The Browser is a dockable right panel (open/close via the registry), not a
-  // persisted layout preference, so its Layout toggle acts on the live registry
-  // state directly rather than through the draft settings.
+  const [installedLanguagePack, setInstalledLanguagePack] = useState<InstalledLanguagePack | null>(
+    null,
+  );
+  const [languagePackBusy, setLanguagePackBusy] = useState<"download" | "import" | "remove" | null>(
+    null,
+  );
+  const [languagePackNotice, setLanguagePackNotice] = useState<{
+    kind: "success" | "error";
+    text: string;
+  } | null>(null);
+  // One source for both the Download button and the catalog link below, so a
+  // build that points `VITE_LANGUAGE_PACK_BASE_URL` at a self-hosted mirror (or
+  // opts out of external CDNs entirely) can never offer a link to a host it does
+  // not download from.
+  const languagePackHost = languagePackBaseUrl();
+  const languagePackDownloadsEnabled = languagePackHost.length > 0;
+  // Browser and Comments are dockable right panels: the registry owns whether
+  // they are on screen and `registerPersistedRightPanel` mirrors that into
+  // `layout.browserPanelVisible` / `layout.commentsPanelVisible`, so the toggle
+  // no longer resets on every launch (#1935). Because the mirror is the single
+  // writer, moving the panel is all these controls have to do: the setting
+  // follows, so the two can never disagree about what the checkbox should say.
   const rightPanelState = useRightPanelState();
   const browserPanelOpen = rightPanelState.visibleIds.includes(BROWSER_PANEL_ID);
   const commentsPanelOpen = rightPanelState.visibleIds.includes(COMMENTS_PANEL_ID);
-  // Show it collapsed on the shared Layers rail, matching its default state, so
-  // re-enabling from Settings doesn't jump to an expanded panel that buries the
-  // Layers panel.
-  const toggleBrowserPanel = (show: boolean) => {
-    if (show) {
-      openRightPanel(BROWSER_PANEL_ID);
-      collapseRightPanel(BROWSER_PANEL_ID);
-    } else {
-      closeRightPanel(BROWSER_PANEL_ID);
-    }
-  };
-  // Collapsed for the same reason as Browser above, and to match the state
-  // Comments registers itself in on mount.
-  const toggleCommentsPanel = (show: boolean) => {
-    if (show) {
-      openRightPanel(COMMENTS_PANEL_ID);
-      collapseRightPanel(COMMENTS_PANEL_ID);
-    } else {
-      closeRightPanel(COMMENTS_PANEL_ID);
-    }
-  };
+  const toggleBrowserPanel = (show: boolean) => applyRightPanelVisibility(BROWSER_PANEL_ID, show);
+  const toggleCommentsPanel = (show: boolean) => applyRightPanelVisibility(COMMENTS_PANEL_ID, show);
   // A field a deep-link asked us to focus once its section renders; cleared
   // after the focus lands so a later open without a focus request stays put.
   const [pendingFocus, setPendingFocus] = useState<SettingsFocusTarget | null>(null);
   const shareTokenInputRef = useRef<HTMLInputElement>(null);
+  const cesiumTokenInputRef = useRef<HTMLInputElement>(null);
+  const mapboxTokenInputRef = useRef<HTMLInputElement>(null);
+  const arcgisKeyInputRef = useRef<HTMLInputElement>(null);
+  const languagePackFileRef = useRef<HTMLInputElement>(null);
   // The native color input in the Appearance pane. The accent-color dropdown's
   // "Custom" entry deep-links here so picking a custom color is reachable
   // without a third-level menu (#718).
@@ -472,7 +625,6 @@ export function SettingsDialog({
     // The Microsoft Store build has no in-app update flow to configure (policy
     // 10.2.5), so its settings section is dropped entirely.
     if (id === "updates" && IS_STORE_BUILD) return false;
-    if (id === "startup" && !isTauri()) return false;
     const gate = SECTION_GATE[id];
     return gate ? showSettingsItem(gate) : true;
   };
@@ -484,7 +636,7 @@ export function SettingsDialog({
     clonePreferences(preferences),
   );
   const [draftDesktopSettings, setDraftDesktopSettings] = useState<DraftDesktopSettings>(() =>
-    cloneDesktopSettings(desktopSettings),
+    cloneDesktopSettings(desktopSettings, preferences),
   );
   const [error, setError] = useState<string | null>(null);
   // Live map projection, captured when the dialog opens. The Globe projection
@@ -507,9 +659,8 @@ export function SettingsDialog({
   const [editingProfileId, setEditingProfileId] = useState<string | null>(null);
   // Whether the user is creating a new profile (transient — no id yet).
   const [isCreatingProfile, setIsCreatingProfile] = useState(false);
-  // The draft env vars as a plain name→value map (enabled, named only), matching
-  // what the live runtime env will hold after Save. Drives the per-provider
-  // "configured" status without re-implementing provider.ts resolution.
+  // Enabled, named project environment values shadow OS values when the settings
+  // fields resolve which credential to surface.
   const draftEnv = useMemo(() => {
     const env: Record<string, string> = {};
     for (const variable of draftPreferences.environmentVariables) {
@@ -526,13 +677,9 @@ export function SettingsDialog({
     return draftDesktopSettings.aiProfiles.find((p) => p.id === editingProfileId) ?? null;
   }, [editingProfileId, isCreatingProfile, draftDesktopSettings.aiProfiles]);
 
-  /** The provider shown in the editing fields. Derived from the editing profile. */
-  const editingProvider: AssistantProviderId = editingProfile?.provider ?? "google";
-
   /**
-   * Flat env map from all profiles' fieldValues. Projected into the runtime env
-   * alongside OS and project values so provider "configured" status reflects
-   * what the assistant will actually resolve.
+   * Flat env map from saved profile fieldValues. Its names prevent matching OS
+   * credentials from shadowing the values shown in the profile editor.
    */
   const draftProfilesEnv = useMemo(() => {
     const env: Record<string, string> = {};
@@ -544,11 +691,8 @@ export function SettingsDialog({
     }
     return env;
   }, [draftDesktopSettings.aiProfiles]);
-  // AI keys read from the user's OS environment (desktop only). This dialog is
-  // mounted eagerly at startup — before the App-root loader populates the cache
-  // and before the async Tauri read resolves — so a mount-only read would freeze
-  // at `{}`. Load it here through state (mirroring useRuntimeEnvironmentVariables)
-  // so provider status and the badges below reflect env-sourced credentials.
+  // Read OS keys here because the dialog mounts before the app-root cache is
+  // populated; state keeps the field badges current after the async read.
   const [osEnv, setOsEnv] = useState<RuntimeEnv>(() => readOsEnv());
   useEffect(() => {
     let cancelled = false;
@@ -559,11 +703,8 @@ export function SettingsDialog({
       cancelled = true;
     };
   }, []);
-  // Scope OS values against the draft exactly as the runtime merge does
-  // (useRuntimeEnvironmentVariables), so this dialog's notion of "configured"
-  // and the field badges match what the assistant will actually resolve — a
-  // plain spread would disagree in the alias-collision case (e.g. an empty
-  // project GOOGLE_API_KEY row shadows the whole Google OS alias group).
+  // Scope OS values against draft credentials so fields surface the same value
+  // as runtime resolution, including credential aliases.
   const scopedOsEnv = useMemo(
     () =>
       scopeOsEnvToProject(
@@ -572,12 +713,11 @@ export function SettingsDialog({
       ),
     [osEnv, draftEnv, draftProfilesEnv],
   );
-  // Merge OS env under the drafts so a provider configured purely via a system
-  // environment variable still reports "ready". Precedence mirrors the live
-  // runtime merge: OS < device AI keys < project Environment variables.
-  const effectiveEnv = useMemo(
-    () => ({ ...scopedOsEnv, ...draftProfilesEnv, ...draftEnv }),
-    [scopedOsEnv, draftProfilesEnv, draftEnv],
+  const modelEnv = useMemo(
+    () => ({
+      OPENROUTER_MODEL: draftEnv.OPENROUTER_MODEL ?? scopedOsEnv.OPENROUTER_MODEL ?? "",
+    }),
+    [scopedOsEnv.OPENROUTER_MODEL, draftEnv.OPENROUTER_MODEL],
   );
 
   // Seed the draft from the store only when the dialog opens. Depending on
@@ -603,7 +743,10 @@ export function SettingsDialog({
     const seededPreferences = clonePreferences(useAppStore.getState().preferences);
     setDraftPreferences(seededPreferences);
     setDraftDesktopSettings(
-      cloneDesktopSettings(useDesktopSettingsStore.getState().desktopSettings),
+      cloneDesktopSettings(
+        useDesktopSettingsStore.getState().desktopSettings,
+        useAppStore.getState().preferences,
+      ),
     );
     // Land the AI section on the first profile's provider, or the first
     // available provider if no profiles exist, so the user sees something
@@ -642,6 +785,24 @@ export function SettingsDialog({
     setError(null);
     setLiveProjection(mapControllerRef.current?.readProjection() ?? null);
   }, [open, mapControllerRef]);
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    getInstalledLanguagePack(language)
+      .then((installed) => {
+        if (!cancelled) setInstalledLanguagePack(installed);
+      })
+      .catch((loadError: unknown) => {
+        if (!cancelled) {
+          console.error("[GeoLibre] Failed to read the installed language pack", loadError);
+          setInstalledLanguagePack(null);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, language]);
 
   // Let other panels deep-link into a specific Settings section (e.g. the AI
   // Assistant onboarding card opens the AI Providers section to add credentials).
@@ -683,11 +844,21 @@ export function SettingsDialog({
   // only mounts when the Environment section is active, so this waits for the
   // section to settle rather than focusing on open.
   useEffect(() => {
-    if (!open || pendingFocus !== "shareToken") return;
+    const input =
+      pendingFocus === "shareToken"
+        ? shareTokenInputRef
+        : pendingFocus === "cesiumToken"
+          ? cesiumTokenInputRef
+          : pendingFocus === "mapboxToken"
+            ? mapboxTokenInputRef
+            : pendingFocus === "arcgisKey"
+              ? arcgisKeyInputRef
+              : null;
+    if (!open || !input) return;
     if (effectiveSection !== "environment") return;
     const id = window.requestAnimationFrame(() => {
-      shareTokenInputRef.current?.focus();
-      shareTokenInputRef.current?.select();
+      input.current?.focus();
+      input.current?.select();
       // Set the guard BEFORE clearing pendingFocus: the clear re-runs the
       // nav-focus effect, and because this write is synchronous and lexically
       // first, the ref is already true when that run reads it, so it skips and
@@ -995,6 +1166,23 @@ export function SettingsDialog({
     setError(null);
   };
 
+  // Ignore a cleared field (valueAsNumber is NaN) so it does not silently fall
+  // back to the hardcoded default on save; the last valid value is kept.
+  const updateStartupCenterValue = (index: 0 | 1, value: number) => {
+    if (!Number.isFinite(value)) return;
+    setDraftDesktopSettings((current) => {
+      const center: StartupSettings["center"] = [...current.startup.center];
+      center[index] = value;
+      return { ...current, startup: { ...current.startup, center } };
+    });
+    setError(null);
+  };
+
+  const updateStartupZoom = (value: number) => {
+    if (!Number.isFinite(value)) return;
+    updateDraftStartupSettings({ zoom: value });
+  };
+
   const chooseStartupProject = async () => {
     try {
       const result = await openProjectFile();
@@ -1008,6 +1196,18 @@ export function SettingsDialog({
       console.error("Could not select a startup project.", error);
       setError(t("settings.startup.selectError"));
     }
+  };
+
+  const applyCurrentStartupView = () => {
+    const view = mapControllerRef.current?.readView();
+    if (!view) {
+      setError(t("settings.startup.viewUnavailable"));
+      return;
+    }
+    updateDraftStartupSettings({
+      center: [roundCoordinate(view.center[0]), roundCoordinate(view.center[1])],
+      zoom: Number(view.zoom.toFixed(2)),
+    });
   };
 
   // Live updates from the Settings dropdown's Interface submenu (not the draft,
@@ -1199,13 +1399,110 @@ export function SettingsDialog({
       layout: draftDesktopSettings.layout,
       shareToken: draftDesktopSettings.shareToken,
       cesiumIonToken: draftDesktopSettings.cesiumIonToken,
+      mapboxAccessToken: draftDesktopSettings.mapboxAccessToken,
+      arcgisApiKey: draftDesktopSettings.arcgisApiKey,
       aiProfiles: draftDesktopSettings.aiProfiles,
       defaultAiProfileId: draftDesktopSettings.defaultAiProfileId,
       uiProfile: committedUiProfile,
       updates: draftDesktopSettings.updates,
       startup: draftDesktopSettings.startup,
     });
+    // On Android the project behind the preference just saved is reachable only
+    // until this process ends, so keep a copy the next launch can open
+    // (GeoLibre#1948). A no-op on every other platform.
+    void ensureStartupProjectSnapshot(
+      draftDesktopSettings.startup,
+      useAppStore.getState().recentProjects,
+    );
+    // The dockable panels are the one layout row nothing renders from the store:
+    // the registry owns what is on screen, so move it to match what was just
+    // saved (a no-op for a panel already there, so an untouched Save cannot
+    // collapse one the user had expanded).
+    applyRightPanelVisibility(BROWSER_PANEL_ID, draftDesktopSettings.layout.browserPanelVisible);
+    applyRightPanelVisibility(COMMENTS_PANEL_ID, draftDesktopSettings.layout.commentsPanelVisible);
     setOpen(false);
+  };
+
+  const languagePackErrorMessage = (packError: unknown): string => {
+    if (!(packError instanceof LanguagePackError)) {
+      return t("settings.languagePack.errorGeneric");
+    }
+    switch (packError.code) {
+      case "invalid-json":
+        return t("settings.languagePack.errorInvalidJson");
+      case "invalid-format":
+      case "invalid-translations":
+      case "empty-pack":
+        return t("settings.languagePack.errorInvalidFormat");
+      case "unsupported-version":
+        return t("settings.languagePack.errorUnsupportedVersion");
+      case "invalid-locale":
+        return t("settings.languagePack.errorInvalidLocale");
+      case "unsupported-locale":
+        return t("settings.languagePack.errorUnsupportedLocale");
+      case "too-large":
+        return t("settings.languagePack.errorTooLarge");
+      case "not-found":
+        return t("settings.languagePack.errorNotFound");
+      case "download-failed":
+        return t("settings.languagePack.errorDownload");
+    }
+  };
+
+  const handleLanguagePackDownload = async () => {
+    setLanguagePackBusy("download");
+    setLanguagePackNotice(null);
+    try {
+      const installed = await downloadLanguagePack(language);
+      setInstalledLanguagePack(installed);
+      setLanguagePackNotice({ kind: "success", text: t("settings.languagePack.downloaded") });
+    } catch (packError) {
+      setLanguagePackNotice({ kind: "error", text: languagePackErrorMessage(packError) });
+    } finally {
+      setLanguagePackBusy(null);
+    }
+  };
+
+  const handleLanguagePackFile = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    // `parseLanguagePack` enforces the same limit, but only after `file.text()`
+    // has already buffered the whole file. Checking the declared size first
+    // turns a mistakenly picked multi-gigabyte file into a clean error rather
+    // than a tab that reads it into memory before rejecting it.
+    if (file.size > LANGUAGE_PACK_MAX_BYTES) {
+      setLanguagePackNotice({ kind: "error", text: t("settings.languagePack.errorTooLarge") });
+      return;
+    }
+    setLanguagePackBusy("import");
+    setLanguagePackNotice(null);
+    try {
+      const installed = await installLanguagePackFile(await file.text());
+      if (installed.locale === language) setInstalledLanguagePack(installed);
+      setLanguagePackNotice({
+        kind: "success",
+        text: t("settings.languagePack.imported", { locale: installed.locale }),
+      });
+    } catch (packError) {
+      setLanguagePackNotice({ kind: "error", text: languagePackErrorMessage(packError) });
+    } finally {
+      setLanguagePackBusy(null);
+    }
+  };
+
+  const handleLanguagePackRemove = async () => {
+    setLanguagePackBusy("remove");
+    setLanguagePackNotice(null);
+    try {
+      await removeLanguagePack(language);
+      setInstalledLanguagePack(null);
+      setLanguagePackNotice({ kind: "success", text: t("settings.languagePack.removed") });
+    } catch (packError) {
+      setLanguagePackNotice({ kind: "error", text: languagePackErrorMessage(packError) });
+    } finally {
+      setLanguagePackBusy(null);
+    }
   };
 
   const renderSectionButton = (item: (typeof SECTION_ITEMS)[number]) => {
@@ -1261,6 +1558,16 @@ export function SettingsDialog({
                   </DropdownMenuRadioItem>
                 ))}
               </DropdownMenuRadioGroup>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                onSelect={() => {
+                  setSection("language");
+                  setOpen(true);
+                }}
+              >
+                <PackageCheck className="me-2 h-3.5 w-3.5" />
+                {t("settings.languagePack.manage")}
+              </DropdownMenuItem>
             </DropdownMenuSubContent>
           </DropdownMenuSub>
           <DropdownMenuSeparator />
@@ -1507,6 +1814,17 @@ export function SettingsDialog({
               {t("settings.menu.updates")}
             </DropdownMenuItem>
           )}
+          {isSectionVisible("startup") && (
+            <DropdownMenuItem
+              onSelect={() => {
+                setSection("startup");
+                setOpen(true);
+              }}
+            >
+              <FolderOpen className="me-2 h-3.5 w-3.5" />
+              {t("settings.menu.startupSettings")}
+            </DropdownMenuItem>
+          )}
           {/* The Mac App Store build has no plugin marketplace (external
               plugin installs are not allowed there), so its entry point is
               dropped; composed with the profile gate like the Store build's
@@ -1539,6 +1857,151 @@ export function SettingsDialog({
               {SECTION_ITEMS.filter((item) => isSectionVisible(item.id)).map(renderSectionButton)}
             </nav>
             <div className="min-h-0 min-w-0 overflow-y-auto p-6">
+              {effectiveSection === "language" ? (
+                <div className="space-y-6">
+                  <div>
+                    <h3 className="text-sm font-semibold">{t("settings.languagePack.title")}</h3>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      {t("settings.languagePack.description")}
+                    </p>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="settings-language-pack-locale">
+                      {t("settings.languagePack.interfaceLanguage")}
+                    </Label>
+                    <Select
+                      id="settings-language-pack-locale"
+                      value={language}
+                      onChange={(event) => {
+                        setLanguagePackNotice(null);
+                        setLanguage(event.target.value);
+                      }}
+                    >
+                      {languageOptions.map((option) => (
+                        <option key={option.code} value={option.code}>
+                          {option.nativeName === option.englishName
+                            ? option.nativeName
+                            : `${option.nativeName} (${option.englishName})`}
+                        </option>
+                      ))}
+                    </Select>
+                  </div>
+                  <div className="rounded-lg border bg-muted/20 p-4">
+                    <div className="flex items-start gap-3">
+                      <div
+                        className={cn(
+                          "mt-0.5 grid h-9 w-9 shrink-0 place-items-center rounded-full",
+                          installedLanguagePack
+                            ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
+                            : "bg-muted text-muted-foreground",
+                        )}
+                      >
+                        <PackageCheck className="h-4 w-4" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-medium">
+                          {installedLanguagePack
+                            ? t("settings.languagePack.installed")
+                            : t("settings.languagePack.notInstalled")}
+                        </p>
+                        <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                          {installedLanguagePack
+                            ? installedPackDetail(t, language, installedLanguagePack)
+                            : language === "en"
+                              ? t("settings.languagePack.englishFallback")
+                              : languagePackDownloadsEnabled
+                                ? t("settings.languagePack.notInstalledDetail")
+                                : t("settings.languagePack.downloadsDisabled")}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      {language !== "en" && languagePackDownloadsEnabled ? (
+                        <Button
+                          type="button"
+                          size="sm"
+                          onClick={handleLanguagePackDownload}
+                          disabled={languagePackBusy !== null}
+                        >
+                          {languagePackBusy === "download" ? (
+                            <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+                          ) : (
+                            <DownloadCloud className="h-3.5 w-3.5" />
+                          )}
+                          {t("settings.languagePack.download")}
+                        </Button>
+                      ) : null}
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        disabled={languagePackBusy !== null}
+                        onClick={() => languagePackFileRef.current?.click()}
+                      >
+                        {languagePackBusy === "import" ? (
+                          <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <Upload className="h-3.5 w-3.5" />
+                        )}
+                        {t("settings.languagePack.importFile")}
+                      </Button>
+                      {installedLanguagePack ? (
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          disabled={languagePackBusy !== null}
+                          onClick={handleLanguagePackRemove}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                          {t("settings.languagePack.remove")}
+                        </Button>
+                      ) : null}
+                      <input
+                        ref={languagePackFileRef}
+                        className="hidden"
+                        type="file"
+                        accept=".json,application/json"
+                        onChange={handleLanguagePackFile}
+                      />
+                    </div>
+                  </div>
+                  {languagePackNotice ? (
+                    <p
+                      className={cn(
+                        "text-sm",
+                        languagePackNotice.kind === "error"
+                          ? "text-destructive"
+                          : "text-emerald-700 dark:text-emerald-300",
+                      )}
+                      role={languagePackNotice.kind === "error" ? "alert" : "status"}
+                    >
+                      {languagePackNotice.text}
+                    </p>
+                  ) : null}
+                  <p className="text-xs leading-5 text-muted-foreground">
+                    {languagePackHost
+                      ? t("settings.languagePack.privacy", {
+                          host: languagePackHostname(languagePackHost),
+                        })
+                      : t("settings.languagePack.privacyLocalOnly")}
+                    {languagePackHost ? (
+                      <>
+                        {" "}
+                        <a
+                          className="inline-flex items-center gap-1 underline underline-offset-2"
+                          href={languagePackHost}
+                          target="_blank"
+                          rel="noreferrer noopener"
+                        >
+                          {t("settings.languagePack.browse")}
+                          <ExternalLink className="h-3 w-3" />
+                        </a>
+                      </>
+                    ) : null}
+                  </p>
+                </div>
+              ) : null}
               {effectiveSection === "map" ? (
                 <div className="space-y-5">
                   <div className="flex items-center justify-between gap-3">
@@ -1827,8 +2290,12 @@ export function SettingsDialog({
                       <input
                         className="h-4 w-4"
                         type="checkbox"
-                        checked={browserPanelOpen}
-                        onChange={(event) => toggleBrowserPanel(event.target.checked)}
+                        checked={draftDesktopSettings.layout.browserPanelVisible}
+                        onChange={(event) =>
+                          updateDraftLayoutSettings({
+                            browserPanelVisible: event.target.checked,
+                          })
+                        }
                       />
                       <FolderTree className="h-4 w-4 text-muted-foreground" />
                       <span>{t("settings.layout.showBrowserPanel")}</span>
@@ -1837,8 +2304,12 @@ export function SettingsDialog({
                       <input
                         className="h-4 w-4"
                         type="checkbox"
-                        checked={commentsPanelOpen}
-                        onChange={(event) => toggleCommentsPanel(event.target.checked)}
+                        checked={draftDesktopSettings.layout.commentsPanelVisible}
+                        onChange={(event) =>
+                          updateDraftLayoutSettings({
+                            commentsPanelVisible: event.target.checked,
+                          })
+                        }
                       />
                       <MessageSquare className="h-4 w-4 text-muted-foreground" />
                       <span>{t("settings.layout.showCommentsPanel")}</span>
@@ -2132,7 +2603,7 @@ export function SettingsDialog({
                                 togglePluginHidden(plugin.id, event.target.checked)
                               }
                             />
-                            <span>{plugin.name}</span>
+                            <span>{pluginDisplayName(t, plugin)}</span>
                           </label>
                         ))}
                       </div>
@@ -2328,16 +2799,16 @@ export function SettingsDialog({
               {effectiveSection === "ai" ? (
                 <AiSectionContent
                   draftDesktopSettings={draftDesktopSettings}
+                  draftEnv={draftEnv}
                   setDraftDesktopSettings={setDraftDesktopSettings}
                   editingProfileId={editingProfileId}
                   setEditingProfileId={setEditingProfileId}
                   isCreatingProfile={isCreatingProfile}
                   setIsCreatingProfile={setIsCreatingProfile}
                   editingProfile={editingProfile}
-                  editingProvider={editingProvider}
                   defaultAiProfileId={draftDesktopSettings.defaultAiProfileId}
                   scopedOsEnv={scopedOsEnv}
-                  effectiveEnv={effectiveEnv}
+                  modelEnv={modelEnv}
                   revealedValueIds={revealedValueIds}
                   toggleValueVisibility={toggleValueVisibility}
                   getProviderField={getProviderField}
@@ -2347,26 +2818,28 @@ export function SettingsDialog({
               ) : null}
               {effectiveSection === "environment" ? (
                 <div className="space-y-5">
-                  <div className="space-y-2">
+                  {shareTokenUsable && (oauthSupported || oauthSetupError) ? (
+                    <ShareAccountSection
+                      shareHost={shareHost}
+                      hasPersonalToken={draftDesktopSettings.shareToken.trim().length > 0}
+                    />
+                  ) : null}
+                  <div
+                    className={cn(
+                      "space-y-2",
+                      (oauthSupported || oauthSetupError) && shareTokenUsable && "border-t pt-5",
+                    )}
+                  >
                     <h3 className="text-sm font-semibold">{t("settings.env.tokenTitle")}</h3>
                     {shareTokenUsable ? (
                       <>
                         <p className="text-xs text-muted-foreground">
-                          <Trans
+                          <SettingsTrans
                             i18nKey="settings.env.tokenDescription"
                             values={{ shareHost }}
-                            components={{
-                              // Non-null here: this branch requires shareBaseUrl,
-                              // which is what shareSettingsUrl is derived from.
-                              tokenLink: (
-                                <a
-                                  className="underline"
-                                  href={shareSettingsUrl ?? undefined}
-                                  target="_blank"
-                                  rel="noreferrer noopener"
-                                />
-                              ),
-                            }}
+                            // Non-null here: this branch requires shareBaseUrl,
+                            // which is what shareSettingsUrl is derived from.
+                            components={shareTokenComponents}
                           />
                         </p>
                         <Input
@@ -2391,21 +2864,13 @@ export function SettingsDialog({
                   <div className="space-y-2 border-t pt-5">
                     <h3 className="text-sm font-semibold">{t("settings.env.cesiumTokenTitle")}</h3>
                     <p className="text-xs text-muted-foreground">
-                      <Trans
+                      <SettingsTrans
                         i18nKey="settings.env.cesiumTokenDescription"
-                        components={{
-                          tokenLink: (
-                            <a
-                              className="underline"
-                              href="https://ion.cesium.com/tokens"
-                              target="_blank"
-                              rel="noreferrer noopener"
-                            />
-                          ),
-                        }}
+                        components={cesiumTokenComponents}
                       />
                     </p>
                     <Input
+                      ref={cesiumTokenInputRef}
                       aria-label={t("settings.env.cesiumTokenTitle")}
                       type="password"
                       autoComplete="new-password"
@@ -2415,6 +2880,58 @@ export function SettingsDialog({
                     />
                     <p className="text-xs text-muted-foreground">
                       {t("settings.env.cesiumTokenStorageNote")}
+                    </p>
+                  </div>
+                  <div className="space-y-2 border-t pt-5">
+                    <h3 className="text-sm font-semibold">{t("settings.env.mapboxTokenTitle")}</h3>
+                    <p className="text-xs text-muted-foreground">
+                      <SettingsTrans
+                        i18nKey="settings.env.mapboxTokenDescription"
+                        components={mapboxTokenComponents}
+                      />
+                    </p>
+                    <Input
+                      ref={mapboxTokenInputRef}
+                      aria-label={t("settings.env.mapboxTokenTitle")}
+                      type="password"
+                      autoComplete="new-password"
+                      placeholder={t("settings.env.mapboxTokenPlaceholder")}
+                      value={draftDesktopSettings.mapboxAccessToken}
+                      onChange={(event) =>
+                        setDraftDesktopSettings((current) => ({
+                          ...current,
+                          mapboxAccessToken: event.target.value,
+                        }))
+                      }
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      {t("settings.env.mapboxTokenStorageNote")}
+                    </p>
+                  </div>
+                  <div className="space-y-2 border-t pt-5">
+                    <h3 className="text-sm font-semibold">{t("settings.env.arcgisKeyTitle")}</h3>
+                    <p className="text-xs text-muted-foreground">
+                      <SettingsTrans
+                        i18nKey="settings.env.arcgisKeyDescription"
+                        components={arcgisKeyComponents}
+                      />
+                    </p>
+                    <Input
+                      ref={arcgisKeyInputRef}
+                      aria-label={t("settings.env.arcgisKeyTitle")}
+                      type="password"
+                      autoComplete="new-password"
+                      placeholder={t("settings.env.arcgisKeyPlaceholder")}
+                      value={draftDesktopSettings.arcgisApiKey}
+                      onChange={(event) =>
+                        setDraftDesktopSettings((current) => ({
+                          ...current,
+                          arcgisApiKey: event.target.value,
+                        }))
+                      }
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      {t("settings.env.arcgisKeyStorageNote")}
                     </p>
                   </div>
                   <div className="flex items-center justify-between gap-3 border-t pt-5">
@@ -2537,7 +3054,7 @@ export function SettingsDialog({
                       {t("settings.startup.description")}
                     </p>
                   </div>
-                  <div className="space-y-2">
+                  <div className={isTauri() ? "space-y-2" : "hidden"}>
                     {(["default", "last"] as const).map((mode) => (
                       <label
                         key={mode}
@@ -2584,6 +3101,87 @@ export function SettingsDialog({
                         {t("settings.startup.chooseProject")}
                       </Button>
                     </label>
+                  </div>
+                  <label className="flex items-start gap-3 rounded-md border p-3 text-sm">
+                    <input
+                      className="mt-0.5 h-4 w-4"
+                      type="checkbox"
+                      checked={draftDesktopSettings.startup.globeByDefault}
+                      onChange={(event) =>
+                        updateDraftStartupSettings({ globeByDefault: event.target.checked })
+                      }
+                    />
+                    <span className="space-y-1">
+                      <span className="block">{t("settings.startup.globeByDefault")}</span>
+                      <span className="block text-xs text-muted-foreground">
+                        {t("settings.startup.globeByDefaultHint")}
+                      </span>
+                    </span>
+                  </label>
+                  <div className="space-y-3 rounded-md border p-3">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div className="space-y-1">
+                        <p className="text-sm">{t("settings.startup.defaultView")}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {t("settings.startup.defaultViewHint")}
+                        </p>
+                      </div>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={applyCurrentStartupView}
+                      >
+                        <Crosshair className="h-3.5 w-3.5" />
+                        {t("settings.startup.useCurrentView")}
+                      </Button>
+                    </div>
+                    <div className="grid gap-3 sm:grid-cols-3">
+                      <div className="space-y-1.5">
+                        <Label htmlFor="settings-startup-longitude">
+                          {t("settings.startup.longitude")}
+                        </Label>
+                        <Input
+                          id="settings-startup-longitude"
+                          type="number"
+                          min={-180}
+                          max={180}
+                          step="0.000001"
+                          value={draftDesktopSettings.startup.center[0]}
+                          onChange={(event) =>
+                            updateStartupCenterValue(0, event.target.valueAsNumber)
+                          }
+                        />
+                      </div>
+                      <div className="space-y-1.5">
+                        <Label htmlFor="settings-startup-latitude">
+                          {t("settings.startup.latitude")}
+                        </Label>
+                        <Input
+                          id="settings-startup-latitude"
+                          type="number"
+                          min={-90}
+                          max={90}
+                          step="0.000001"
+                          value={draftDesktopSettings.startup.center[1]}
+                          onChange={(event) =>
+                            updateStartupCenterValue(1, event.target.valueAsNumber)
+                          }
+                        />
+                      </div>
+                      <div className="space-y-1.5">
+                        <Label htmlFor="settings-startup-zoom">{t("settings.startup.zoom")}</Label>
+                        <Input
+                          id="settings-startup-zoom"
+                          type="number"
+                          min={0}
+                          max={24}
+                          step={0.25}
+                          value={draftDesktopSettings.startup.zoom}
+                          onChange={(event) => updateStartupZoom(event.target.valueAsNumber)}
+                        />
+                      </div>
+                    </div>
                   </div>
                 </div>
               ) : null}
@@ -2657,7 +3255,13 @@ export function SettingsDialog({
           {error ? (
             <div className="border-t px-6 py-2 text-sm text-destructive">{error}</div>
           ) : null}
-          {effectiveSection === "ai" && (editingProfileId || isCreatingProfile) ? (
+          {effectiveSection === "language" ? (
+            <div className="flex justify-end border-t px-6 py-4">
+              <Button type="button" onClick={() => setOpen(false)}>
+                {t("common.close")}
+              </Button>
+            </div>
+          ) : effectiveSection === "ai" && (editingProfileId || isCreatingProfile) ? (
             <div className="border-t px-6 py-4 text-center text-xs text-muted-foreground">
               {t("settings.ai.profileEditSaveHint")}
             </div>

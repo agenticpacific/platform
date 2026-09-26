@@ -50,10 +50,12 @@ apply:
   [`?url=` deep link](user-guide/embedding.md#url-parameters) is fetched the same
   way, so a project file behind your SSO layer loads when the app is served from
   that same origin, and fails with a network/CORS error when it is not.
-- **Content Security Policy.** The Docker image and the desktop app both allow
-  `https:` in `connect-src`, plus loopback for local development. A self-hosted
-  data server must therefore be reachable over **HTTPS** (plain `http://` works
-  only on `localhost` / `127.0.0.1`).
+- **Content Security Policy.** The Docker image allows `https:` in
+  `connect-src`, plus loopback for local development, so a self-hosted data
+  server reached through it must be over **HTTPS** (plain `http://` works only
+  on `localhost` / `127.0.0.1`). The desktop app additionally allows plain
+  `http:` to any host, so it can reach a self-hosted Ollama, SamGeo, or other
+  service on your local network without HTTPS (issue #2620).
 
 Putting GeoLibre and the data on one origin turns all five of these from
 configuration problems into non-problems.
@@ -140,6 +142,7 @@ Settings that matter for a private deployment:
 | --- | --- | --- |
 | `GEOLIBRE_SHARE_URL` | `off`, or your own server | `off` removes Share and the Project Gallery entirely, so no project can be published to `share.geolibre.app` by accident. A URL points both at your own [projects server](server-api.md). |
 | `GEOLIBRE_COLLAB_URL` | unset, or your own relay | Unset leaves [live collaboration](collaboration.md) dark. Set it to a `wss://` relay you run if you want multiplayer editing without the hosted relay. |
+| `GEOLIBRE_GEOLENS_URL` | unset for the image default, `same-origin`, your GeoLens URL, or `off` | Pre-fills and automatically connects the GeoLens plugin. The stock image defaults to the browser origin, which suits a GeoLens API co-located behind the same reverse proxy. A URL must be a server root without a query or fragment. `off` keeps the panel idle until the user chooses a server. The last successful server is remembered per browser. |
 | `GEOLIBRE_AUTH_USER` / `GEOLIBRE_AUTH_PASSWORD` | set, for a quick single credential | nginx Basic Auth over the app and the `/sidecar` API. One shared credential, not accounts. Use a real auth proxy for multi-user or SSO. |
 | `GEOLIBRE_CLERK_PUBLISHABLE_KEY` | unset, or a Clerk publishable key | Unset keeps the app public and does not load Clerk. A key requires individual users to sign in before the web interface renders; protect server APIs separately. |
 | `GEOLIBRE_CLERK_WAITLIST` | unset, or `1` alongside a Clerk key | Adds Clerk's waitlist form to the sign-in screen, so visitors can request access and you approve each one from the Clerk Dashboard. Leave unset for an invite-only ("restricted") instance, where nothing would act on a request. |
@@ -148,7 +151,9 @@ Settings that matter for a private deployment:
 | `GEOLIBRE_POSTGIS_HOSTS` | unset unless needed | The sidecar's PostGIS endpoints refuse every destination until this names the allowed databases, so a caller cannot aim them at hosts only the container can reach. |
 | `GEOLIBRE_DISABLE_SIDECAR` | `1` if you do not need it | Runs nginx only. |
 | `GEOLIBRE_EMBED_ORIGINS` | unset, or the exact host page origin | Off by default, so a framed deployment cannot be driven by whoever frames it. |
+| `GEOLIBRE_NO_EXTERNAL_CDN` (build arg) | `1` for restricted deployments | Strips GeoLibre's own references to external CDNs (`unpkg.com`, `cdn.jsdelivr.net`) from the build output. Features whose assets are only available from a CDN are disabled or degraded: storymap HTML export, built-in object detection models, ONNX WASM, 3D Tiles Draco/KTX2 decoders, and gdal3.js export. Pyodide is not hard-disabled — the flag drops only its default index URL, so setting `VITE_PYODIDE_INDEX_URL` to an approved mirror keeps it working. Also forces `GEOLIBRE_PGLITE_CDN=0`, `GEOLIBRE_CEREUS_CDN=0`, `GEOLIBRE_GDAL_CDN=0`, and `GEOLIBRE_DUCKDB_WASM_CDN=0` — so PGlite/PostGIS, CereusDB, and DuckDB-WASM stay **available**, vendored into the build under `/assets/` (at a larger build size) rather than fetched. Note that some third-party packages (DuckDB-WASM, loaders.gl, maplibre-gl-3d-tiles) carry their own internal CDN URLs that this flag cannot remove; see [architecture.md](architecture.md) for the details. Intended for deployments that cannot reference untrusted external CDNs (e.g. enterprise environments with strict CSP requirements). |
 | `VITE_WELCOME_DISABLED=1` (build arg) | optional | Skips the first-launch wizard for every visitor. |
+| `VITE_GEOLIBRE_CAPABILITIES` (build arg) | unset, or the capabilities to grant | Unset grants everything (today's behavior). Naming a subset — or `none` — pins what the interface offers: adding data, processing, export, plugins, settings, project authoring. Removes affordances only; it is not a server-side restriction. See [Deployment Capabilities](deployment-capabilities.md). |
 
 See [Getting Started](getting-started.md#run-with-docker) for the full list.
 
@@ -370,13 +375,13 @@ the public internet:
 | --- | --- | --- |
 | Basemaps | OpenFreeMap / CARTO tiles | Use the Basemaps plugin's **custom style URL** and serve your own style plus a PMTiles basemap from your server, or use a blank background. Add the host to the CSP if it is not your own origin. |
 | Geocoding | Public Nominatim | Point it at a self-hosted Nominatim or Pelias (see [Data Integrations](user-guide/data-integrations.md#geocoding)). |
-| Routing and isochrones | Public FOSSGIS Valhalla (`valhalla1.openstreetmap.de`) | Set `VITE_ROUTING_ENDPOINT` to your own Valhalla server. This covers Processing → Network and the **Drive time** / **Walk time** [quick actions](user-guide/map-controls.md#quick-analysis-from-a-clicked-point). Add the host to the CSP. |
+| Routing and isochrones | Public FOSSGIS Valhalla (`valhalla1.openstreetmap.de`) | Set `VITE_ROUTING_ENDPOINT` to your own Valhalla server. This covers Processing → GeoLibre Toolbox → Network and the **Drive time** / **Walk time** [quick actions](user-guide/map-controls.md#quick-analysis-from-a-clicked-point). Add the host to the CSP. |
 | Pointer elevation readout | Public Open-Meteo elevation API, whenever 3D terrain has no sample for the point | Leave the readout off (it is off by default), or decline the consent prompt GeoLibre shows before the first remote lookup — that is the gate the resolver checks. Enabling 3D terrain makes the remote call rare but does not rule it out, since a point terrain cannot answer still falls through. |
 | Python (Pyodide) vector engine | Loads Pyodide from jsDelivr | Set `VITE_PYODIDE_INDEX_URL` to a mirrored copy of the Pyodide distribution. |
 | AI assistant | Off unless configured | Leave `GEOLIBRE_AI_URL` unset, or route it through your own proxy. |
 | Project sharing | `share.geolibre.app` | `GEOLIBRE_SHARE_URL=off`, or your own [projects server](server-api.md). |
 | Collaboration | Off unless configured | Leave `GEOLIBRE_COLLAB_URL` unset, or run `workers/collab-node` yourself. |
-| Telemetry | None | GeoLibre collects no analytics or usage data. See [Privacy Policy](privacy.md). |
+| Telemetry | None | GeoLibre collects no analytics or usage data. The hosted sites (geolibre.app, web.geolibre.app) run Google Analytics, but nothing you deploy does. The Docker image **cannot** turn it on: the `Dockerfile` declares no build argument for it, and the container's CSP does not allow `googletagmanager.com`. A build from source can, by setting `VITE_GEOLIBRE_GA_MEASUREMENT_ID` for `npm run build` with your own measurement ID; there is no runtime variable that enables it. See [Privacy Policy](privacy.md). |
 
 ## Deployment checklist
 
